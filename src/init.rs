@@ -1028,12 +1028,24 @@ pub fn show_config() -> Result<()> {
             let hook_content = fs::read_to_string(&hook_path)?;
             let has_guards =
                 hook_content.contains("command -v rtk") && hook_content.contains("command -v jq");
+            let is_thin_delegator = hook_content.contains("rtk rewrite");
 
-            if is_executable && has_guards {
-                println!("✅ Hook: {} (executable, with guards)", hook_path.display());
-            } else if !is_executable {
+            if !is_executable {
                 println!(
                     "⚠️  Hook: {} (NOT executable - run: chmod +x)",
+                    hook_path.display()
+                );
+            } else if !is_thin_delegator {
+                println!(
+                    "⚠️  Hook: {} (outdated — inline logic, not thin delegator)",
+                    hook_path.display()
+                );
+                println!(
+                    "   → Run `rtk init --global` to upgrade to the single source of truth hook"
+                );
+            } else if is_executable && has_guards {
+                println!(
+                    "✅ Hook: {} (thin delegator, up to date)",
                     hook_path.display()
                 );
             } else {
