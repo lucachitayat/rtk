@@ -186,7 +186,7 @@ impl TokenFormatter for LintResult {
 
     fn format_ultra(&self) -> String {
         format!(
-            "✗{} ⚠{} 📁{}",
+            "✗{} ⚠{} {}F",
             self.errors, self.warnings, self.files_with_issues
         )
     }

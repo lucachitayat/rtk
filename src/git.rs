@@ -623,7 +623,7 @@ fn format_status_output(porcelain: &str) -> String {
     let max_untracked = limits.status_max_untracked;
 
     if staged > 0 {
-        output.push_str(&format!("staged: {} files\n", staged));
+        output.push_str(&format!("+ Staged: {} files\n", staged));
         for f in staged_files.iter().take(max_files) {
             output.push_str(&format!("   {}\n", f));
         }
@@ -1838,7 +1838,7 @@ A  added.rs
 "#;
         let result = format_status_output(porcelain);
         assert!(result.contains("* main"));
-        assert!(result.contains("✅ Staged: 2 files"));
+        assert!(result.contains("+ Staged: 2 files"));
         assert!(result.contains("staged.rs"));
         assert!(result.contains("added.rs"));
         assert!(result.contains("~ Modified: 1 files"));
@@ -1855,7 +1855,7 @@ A  added.rs
             porcelain.push_str(&format!("M  file{}.rs\n", i));
         }
         let result = format_status_output(&porcelain);
-        assert!(result.contains("staged: 20 files"));
+        assert!(result.contains("+ Staged: 20 files"));
         assert!(result.contains("file1.rs"));
         assert!(result.contains("file15.rs"));
         assert!(result.contains("... +5 more"));
@@ -1871,7 +1871,7 @@ A  added.rs
             porcelain.push_str(&format!(" M file{}.rs\n", i));
         }
         let result = format_status_output(&porcelain);
-        assert!(result.contains("modified: 20 files"));
+        assert!(result.contains("~ Modified: 20 files"));
         assert!(result.contains("file1.rs"));
         assert!(result.contains("file15.rs"));
         assert!(result.contains("... +5 more"));
@@ -1886,7 +1886,7 @@ A  added.rs
             porcelain.push_str(&format!("?? file{}.rs\n", i));
         }
         let result = format_status_output(&porcelain);
-        assert!(result.contains("untracked: 15 files"));
+        assert!(result.contains("? Untracked: 15 files"));
         assert!(result.contains("file1.rs"));
         assert!(result.contains("file10.rs"));
         assert!(result.contains("... +5 more"));

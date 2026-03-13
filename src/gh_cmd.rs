@@ -636,13 +636,8 @@ fn list_issues(args: &[String], _verbose: u8, ultra_compact: bool) -> Result<()>
     let mut filtered = String::new();
 
     if let Some(issues) = json.as_array() {
-        if ultra_compact {
-            filtered.push_str("Issues\n");
-            println!("Issues");
-        } else {
-            filtered.push_str("Issues\n");
-            println!("Issues");
-        }
+        filtered.push_str("Issues\n");
+        println!("Issues");
         for issue in issues.iter().take(20) {
             let number = issue["number"].as_i64().unwrap_or(0);
             let title = issue["title"].as_str().unwrap_or("???");
