@@ -401,8 +401,18 @@ fn rewrite_compound(cmd: &str, excluded: &[String]) -> Option<String> {
                 } else {
                     // `|` pipe — rewrite first segment only, pass through the rest unchanged
                     let seg = cmd[seg_start..i].trim();
-                    let rewritten =
-                        rewrite_segment(seg, excluded).unwrap_or_else(|| seg.to_string());
+                    // Skip rewriting `find`/`fd` in pipes — rtk find outputs a grouped
+                    // format that is incompatible with pipe consumers like xargs, grep,
+                    // wc, sort, etc. which expect one path per line (#439).
+                    let is_pipe_incompatible = seg.starts_with("find ")
+                        || seg == "find"
+                        || seg.starts_with("fd ")
+                        || seg == "fd";
+                    let rewritten = if is_pipe_incompatible {
+                        seg.to_string()
+                    } else {
+                        rewrite_segment(seg, excluded).unwrap_or_else(|| seg.to_string())
+                    };
                     if rewritten != seg {
                         any_changed = true;
                     }
@@ -1154,6 +1164,30 @@ mod tests {
         assert_eq!(
             rewrite_command("git log -10 | grep feat", &[]),
             Some("rtk git log -10 | grep feat".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_find_pipe_skipped() {
+        // find in a pipe should NOT be rewritten — rtk find output format
+        // is incompatible with pipe consumers like xargs (#439)
+        assert_eq!(
+            rewrite_command("find . -name '*.rs' | xargs grep 'fn run'", &[]),
+            None
+        );
+    }
+
+    #[test]
+    fn test_rewrite_find_pipe_xargs_wc() {
+        assert_eq!(rewrite_command("find src -type f | wc -l", &[]), None);
+    }
+
+    #[test]
+    fn test_rewrite_find_no_pipe_still_rewritten() {
+        // find WITHOUT a pipe should still be rewritten
+        assert_eq!(
+            rewrite_command("find . -name '*.rs'", &[]),
+            Some("rtk find . -name '*.rs'".into())
         );
     }
 
