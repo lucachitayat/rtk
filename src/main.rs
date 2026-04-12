@@ -7,7 +7,7 @@ mod learn;
 mod parser;
 
 // Re-export command modules for routing
-use cmds::cloud::{aws_cmd, container, curl_cmd, psql_cmd, wget_cmd};
+use cmds::cloud::{aws_cmd, az_cmd, container, curl_cmd, psql_cmd, wget_cmd};
 use cmds::dotnet::{binlog, dotnet_cmd, dotnet_format_report, dotnet_trx};
 use cmds::git::{diff_cmd, gh_cmd, git, gt_cmd};
 use cmds::go::{go_cmd, golangci_cmd};
@@ -40,6 +40,10 @@ pub enum AgentTarget {
     Windsurf,
     /// Cline / Roo Code (VS Code)
     Cline,
+    /// Kilo Code
+    Kilocode,
+    /// Google Antigravity
+    Antigravity,
 }
 
 #[derive(Parser)]
@@ -169,6 +173,15 @@ enum Commands {
         args: Vec<String>,
     },
 
+    /// Azure CLI with compact output (force JSON, compress)
+    Az {
+        /// Azure service subcommand (e.g., pipelines, devops, account, vm)
+        subcommand: String,
+        /// Additional arguments
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+
     /// PostgreSQL client with compact output (strip borders, compress tables)
     #[command(disable_help_flag = true)]
     Psql {
@@ -197,16 +210,16 @@ enum Commands {
         command: Vec<String>,
     },
 
-    /// Show JSON (compact values, or schema-only with --schema)
+    /// Show JSON (compact values by default, or keys-only with --keys-only)
     Json {
         /// JSON file
         file: PathBuf,
         /// Max depth
         #[arg(short, long, default_value = "5")]
         depth: usize,
-        /// Show structure only (strip all values)
+        /// Show keys only (strip all values, show structure)
         #[arg(long)]
-        schema: bool,
+        keys_only: bool,
     },
 
     /// Summarize project dependencies
@@ -1424,6 +1437,8 @@ fn run_cli() -> Result<i32> {
 
         Commands::Aws { subcommand, args } => aws_cmd::run(&subcommand, &args, cli.verbose)?,
 
+        Commands::Az { subcommand, args } => az_cmd::run(&subcommand, &args, cli.verbose)?,
+
         Commands::Psql { args } => psql_cmd::run(&args, cli.verbose)?,
 
         Commands::Pnpm { command } => match command {
@@ -1461,12 +1476,12 @@ fn run_cli() -> Result<i32> {
         Commands::Json {
             file,
             depth,
-            schema,
+            keys_only,
         } => {
             if file == Path::new("-") {
-                json_cmd::run_stdin(depth, schema, cli.verbose)?;
+                json_cmd::run_stdin(depth, keys_only, cli.verbose)?;
             } else {
-                json_cmd::run(&file, depth, schema, cli.verbose)?;
+                json_cmd::run(&file, depth, keys_only, cli.verbose)?;
             }
             0
         }
@@ -1624,6 +1639,18 @@ fn run_cli() -> Result<i32> {
                 hooks::init::run_gemini(global, hook_only, patch_mode, cli.verbose)?;
             } else if copilot {
                 hooks::init::run_copilot(cli.verbose)?;
+            } else if agent == Some(AgentTarget::Kilocode) {
+                if global {
+                    anyhow::bail!("Kilo Code is project-scoped. Use: rtk init --agent kilocode");
+                }
+                hooks::init::run_kilocode_mode(cli.verbose)?;
+            } else if agent == Some(AgentTarget::Antigravity) {
+                if global {
+                    anyhow::bail!(
+                        "Antigravity is project-scoped. Use: rtk init --agent antigravity"
+                    );
+                }
+                hooks::init::run_antigravity_mode(cli.verbose)?;
             } else {
                 let install_opencode = opencode;
                 let install_claude = !opencode;
