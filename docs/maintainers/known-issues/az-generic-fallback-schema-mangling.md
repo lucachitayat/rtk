@@ -2,12 +2,12 @@
 
 **Status:** fixed in PR #1209
 **Severity:** high — the LLM receives fabricated-looking structural placeholders instead of actual Azure data
-**Discovered:** 2026-04-15 while debugging Obelisk CI pipelines via an Azure DevOps agent session
+**Discovered:** 2026-04-15 while debugging CI pipelines via an Azure DevOps agent session
 **Area:** `src/cmds/cloud/az_cmd.rs` → `run_generic` → `json_cmd::filter_json_string`
 
 ## Resolution
 
-The `run_generic` path no longer calls `json_cmd::filter_json_string` (the schema extractor). It now parses JSON, prunes known Azure noise keys (`_links`, `url`, `collectionUri`, `projectUri`, nested `project.*` boilerplate, `revision`), caps top-level arrays at 20 items with a `... +K more items` marker, and emits pretty-compact JSON via `json_cmd::filter_json_compact` with a generous max_depth. Values are preserved; schema-only output was a bug, not a design choice.
+The `run_generic` path no longer calls `json_cmd::filter_json_string` (the schema extractor). It now parses JSON, prunes known Azure noise keys (`_links`, `url`, `collectionUri`, `projectUri`, nested `project.*` boilerplate, `revision`), caps top-level arrays at 20 items with a `... +K more items` marker, and emits compact JSON via `serde_json::to_string` (single-line, no indentation). Values are preserved; schema-only output was a bug, not a design choice.
 
 ## Symptom
 
@@ -19,9 +19,9 @@ Command as the user typed it (common for CI triage):
 
 ```bash
 az pipelines runs list \
-  --organization https://dev.azure.com/PureCarsLabs \
-  --project Obelisk \
-  --branch refs/pull/8346/merge \
+  --organization https://dev.azure.com/myorg \
+  --project MyProject \
+  --branch refs/pull/123/merge \
   --top 5 \
   --output json
 ```
@@ -95,7 +95,7 @@ This was almost certainly a placeholder that was meant to be replaced with a rea
 Bypass RTK entirely for the affected commands:
 
 ```bash
-rtk proxy az pipelines runs list --organization https://dev.azure.com/PureCarsLabs --project Obelisk --top 5 --output json
+rtk proxy az pipelines runs list --organization https://dev.azure.com/myorg --project MyProject --top 5 --output json
 ```
 
 Or route through `--output tsv` / `--query` so the output is plain text (which `run_generic` still runs through `filter_json_string`, but the serde parse fails and it prints raw — see the `Err(_)` branch). **TSV is currently the most reliable bypass through RTK** for non-specialized subcommands:
