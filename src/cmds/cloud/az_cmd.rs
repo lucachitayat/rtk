@@ -626,9 +626,7 @@ fn compress_az_generic(raw: &str) -> (String, bool) {
         None
     };
 
-    let pruned_json = serde_json::to_string(&value).unwrap_or_else(|_| raw.to_string());
-    let compact = json_cmd::filter_json_compact(&pruned_json, GENERIC_COMPRESS_DEPTH)
-        .unwrap_or(pruned_json);
+    let compact = serde_json::to_string(&value).unwrap_or_else(|_| raw.to_string());
 
     match truncated_array {
         Some(overflow) => (format!("{}\n... +{} more items", compact, overflow), true),
