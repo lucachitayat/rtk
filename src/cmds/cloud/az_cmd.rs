@@ -16,7 +16,60 @@ use serde_json::Value;
 const MAX_ITEMS: usize = 20;
 const GENERIC_COMPRESS_DEPTH: usize = 8;
 const MAX_GENERIC_RAW_BYTES: usize = 20_000;
-const LOG_TAIL_LINES: usize = 50;
+/// Default tail size for `az devops invoke --resource logs`. Integration-test
+/// failure diagnosis (Reqnroll, dotnet-test) needs ~70-200 lines between the
+/// ##[error] footer and the actual AssertionCheck/Expected line. 50 was too
+/// aggressive — real failures in AutoMiner pipeline 247 showed the assertion
+/// reason sitting ~68 lines above the footer, outside the window.
+const LOG_TAIL_LINES: usize = 200;
+
+/// Pure parser split from the env lookup so unit tests can exercise all
+/// branches without mutating the process environment.
+fn parse_log_tail(raw: Option<&str>) -> usize {
+    raw.and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(LOG_TAIL_LINES)
+}
+
+/// Minimum byte size for an embedded JSON payload to be elided from a log
+/// line. AutoMiner pipeline 247 logs routinely emit lines like
+/// `ENDPOINT_DATA_<guid>={"environment":...,...}` (~1.7 KB) and
+/// `METADATA_<guid>={"name":...,...}` (~0.7 KB). Above 1 KB these crowd out
+/// real failure context under the (now 200-line) tail.
+const EMBEDDED_PAYLOAD_THRESHOLD: usize = 1024;
+
+/// If `line` carries a large embedded JSON payload (`KEY={...}` or `[...]`
+/// style), replace the payload with a `<json elided bytes=N>` marker so the
+/// reader keeps the surrounding context without paying the token cost. The
+/// prefix (everything before the first `{`/`[`) is preserved verbatim, so
+/// keys like `ENDPOINT_DATA_<guid>=` stay visible.
+///
+/// Returns `None` for lines under `threshold`, lines without a JSON blob, or
+/// lines where the candidate blob fails to parse as JSON (prevents false
+/// positives on long plain-text stack traces).
+fn elide_oversized_embedded_json(line: &str, threshold: usize) -> Option<String> {
+    if line.len() < threshold {
+        return None;
+    }
+    let json_start = line.find(|c: char| c == '{' || c == '[')?;
+    let tail = &line[json_start..];
+    if tail.len() < threshold {
+        return None;
+    }
+    // Require the tail to parse as JSON — otherwise the `{` is probably from
+    // a stack trace (`Dictionary<string, {...}>`) and we'd mangle it.
+    serde_json::from_str::<Value>(tail).ok()?;
+    let prefix = &line[..json_start];
+    Some(format!("{prefix}<json elided bytes={}>", tail.len()))
+}
+
+/// Env override for `LOG_TAIL_LINES`. Set `RTK_AZ_LOG_TAIL=N` to widen/narrow
+/// the tail for a single command or session. Falls back to the default on
+/// unset or unparseable values; ignores 0 to avoid accidentally disabling
+/// output entirely.
+fn resolved_log_tail() -> usize {
+    parse_log_tail(std::env::var("RTK_AZ_LOG_TAIL").ok().as_deref())
+}
 
 /// Keys to strip recursively from generic `az` JSON output — HATEOAS links,
 /// resource URIs, internal GUIDs, revision counters, and other Azure DevOps
@@ -497,25 +550,28 @@ fn filter_logs(raw: &str) -> Option<FilterResult> {
 
             // Actual log content — array of strings with timestamp prefixes
             let total = log_lines.len();
-            let tail: Vec<&Value> = if total > LOG_TAIL_LINES {
-                log_lines[total - LOG_TAIL_LINES..].iter().collect()
+            let tail_size = resolved_log_tail();
+            let tail: Vec<&Value> = if total > tail_size {
+                log_lines[total - tail_size..].iter().collect()
             } else {
                 log_lines.iter().collect()
             };
 
-            let truncated = total > LOG_TAIL_LINES;
+            let truncated = total > tail_size;
             let mut stripped = Vec::new();
 
             for line in &tail {
                 if let Some(s) = (*line).as_str() {
                     let cleaned = TIMESTAMP_RE.replace(s, "").to_string();
-                    stripped.push(cleaned);
+                    let rendered = elide_oversized_embedded_json(&cleaned, EMBEDDED_PAYLOAD_THRESHOLD)
+                        .unwrap_or(cleaned);
+                    stripped.push(rendered);
                 }
             }
 
             let mut text = stripped.join("\n");
             if truncated {
-                text = format!("... ({} lines total, showing last {})\n{}", total, LOG_TAIL_LINES, text);
+                text = format!("... ({} lines total, showing last {})\n{}", total, tail_size, text);
             }
 
             return Some(if truncated {
@@ -1488,9 +1544,11 @@ mod tests {
 
     #[test]
     fn test_logs_token_savings() {
-        // Create a fixture with 100 log lines with ISO timestamp prefixes
+        // Fixture large enough to exercise the default 200-line tail. 500
+        // lines is close to the real AutoMiner `Run Integration Tests` log
+        // (~795 lines) so the measured savings reflect production reality.
         let mut log_lines = Vec::new();
-        for i in 0..100 {
+        for i in 0..500 {
             log_lines.push(format!(
                 "\"2026-04-10T11:{:02}:{:02}.0000000Z ##[section]Log line {} with some typical build output content that goes here\"",
                 i / 60, i % 60, i + 1
@@ -1503,15 +1561,16 @@ mod tests {
         let output_tokens = count_tokens(&result.text);
         let savings = 100.0 - (output_tokens as f64 / input_tokens as f64 * 100.0);
 
-        // Logs savings are lower because content is preserved, mainly timestamps stripped
+        // Logs savings are lower than structured filters because content is
+        // preserved (timestamps stripped + tail truncated to LOG_TAIL_LINES).
         assert!(
             savings >= 40.0,
             "logs filter: expected ≥40% savings, got {:.1}%",
             savings
         );
 
-        // Verify truncation and timestamp removal
-        assert!(result.text.contains("(100 lines total, showing last 50)"));
+        // Verify truncation header + timestamp removal at the new default.
+        assert!(result.text.contains("(500 lines total, showing last 200)"));
         assert!(!result.text.contains("2026-04-10T"));
     }
 
@@ -1681,7 +1740,7 @@ mod tests {
 
     #[test]
     fn test_logs_exact_tail() {
-        // Create exactly 50 lines (LOG_TAIL_LINES)
+        // 50 lines is well under the default tail — must not truncate.
         let mut log_lines = Vec::new();
         for i in 0..50 {
             log_lines.push(format!(
@@ -1692,12 +1751,140 @@ mod tests {
         let json = format!(r#"{{ "value": [{}] }}"#, log_lines.join(",\n"));
 
         let result = filter_logs(&json).unwrap();
-        // Should NOT show truncation header with exactly 50 lines
         assert!(!result.truncated);
         assert!(!result.text.contains("lines total"));
-        // Should show all 50 lines
         assert!(result.text.contains("Log line 1"));
         assert!(result.text.contains("Log line 50"));
+    }
+
+    // ─── G1: LOG_TAIL_LINES default + RTK_AZ_LOG_TAIL env override ───────────
+
+    #[test]
+    fn test_parse_log_tail_defaults_when_unset() {
+        assert_eq!(parse_log_tail(None), LOG_TAIL_LINES);
+    }
+
+    #[test]
+    fn test_parse_log_tail_accepts_valid_value() {
+        assert_eq!(parse_log_tail(Some("75")), 75);
+        assert_eq!(parse_log_tail(Some("1")), 1);
+        assert_eq!(parse_log_tail(Some("10000")), 10000);
+    }
+
+    #[test]
+    fn test_parse_log_tail_rejects_zero() {
+        // Zero would silently drop all log output — fall back to default.
+        assert_eq!(parse_log_tail(Some("0")), LOG_TAIL_LINES);
+    }
+
+    #[test]
+    fn test_parse_log_tail_rejects_invalid() {
+        assert_eq!(parse_log_tail(Some("")), LOG_TAIL_LINES);
+        assert_eq!(parse_log_tail(Some("abc")), LOG_TAIL_LINES);
+        assert_eq!(parse_log_tail(Some("-1")), LOG_TAIL_LINES);
+        assert_eq!(parse_log_tail(Some("3.14")), LOG_TAIL_LINES);
+    }
+
+    #[test]
+    fn test_logs_default_tail_is_200() {
+        // 250 lines → tail at default 200, assertion reason in middle preserved.
+        let mut log_lines = Vec::new();
+        for i in 0..250 {
+            log_lines.push(format!(
+                "\"2026-04-10T11:00:00.0000000Z Log line {}\"",
+                i + 1
+            ));
+        }
+        let json = format!(r#"{{ "value": [{}] }}"#, log_lines.join(","));
+
+        let result = filter_logs(&json).unwrap();
+        assert!(result.truncated);
+        assert!(result.text.contains("250 lines total, showing last 200"));
+        // Line 50 is outside tail → must be absent; line 51 is at the boundary.
+        assert!(!result.text.contains("Log line 50\n"));
+        // Lines 51..=250 should all be present.
+        assert!(result.text.contains("Log line 51"));
+        assert!(result.text.contains("Log line 250"));
+    }
+
+    // ─── G5: filter_timeline must preserve log.id for every failing record ───
+
+    #[test]
+    fn test_filter_timeline_preserves_log_id_per_failing_record() {
+        // Three failures with distinct log ids + one failure with log:null.
+        // Each logId must round-trip into the filtered output.
+        let json = r#"{
+            "records": [
+                {"name":"Build","type":"Stage","result":"failed","log":null,"issues":[]},
+                {"name":"Run Integration Tests","type":"Task","result":"failed","log":{"id":32},"issues":[{"message":"AssertFailed"}]},
+                {"name":"Publish Integration Test Results","type":"Task","result":"failed","log":{"id":36},"issues":[]},
+                {"name":"Build (Linux)","type":"Job","result":"failed","log":{"id":43},"issues":[]},
+                {"name":"Cache AI Evals","type":"Task","result":"succeeded","log":{"id":99}}
+            ]
+        }"#;
+
+        let result = filter_timeline(json).unwrap();
+        let text = &result.text;
+
+        // Every failing record's log id must appear in the output.
+        for id in [32, 36, 43] {
+            assert!(
+                text.contains(&format!("logId:{}", id)),
+                "filter_timeline dropped logId:{} — drill-down to `invoke --resource logs --logId {}` would fail silently.\nOutput:\n{}",
+                id, id, text
+            );
+        }
+
+        // Null-log failing record must render as `logId:-` (not a real id).
+        assert!(
+            text.contains("logId:-"),
+            "null log on failing Stage record must render as `logId:-`, got:\n{}",
+            text
+        );
+
+        // Succeeded record's log id (99) should NOT leak — drill-down is only
+        // meaningful for failures, and including it would bloat the summary.
+        assert!(
+            !text.contains("logId:99"),
+            "log id leaked from a succeeded record — summary should stay focused on failures"
+        );
+    }
+
+    // ─── G4: elide oversized embedded payloads (>=1024 bytes) in log lines ────
+
+    #[test]
+    fn test_filter_logs_elides_oversized_embedded_payload() {
+        // 2 KB JSON blob stuffed inside an Azure ENDPOINT_DATA env var line
+        // (this is the real shape observed in AutoMiner build 298285, log 32).
+        let big_json: String = std::iter::repeat('a').take(2048).collect();
+        let big_line = format!(
+            "2026-04-17T17:27:09.4953295Z ENDPOINT_DATA_debac320={{\"environment\":\"AzureCloud\",\"blob\":\"{}\"}}",
+            big_json
+        );
+        let small_line = "2026-04-17T17:27:09.5000000Z Normal log line".to_string();
+
+        let json = format!(
+            r#"{{"value":[{},{}]}}"#,
+            serde_json::to_string(&big_line).unwrap(),
+            serde_json::to_string(&small_line).unwrap(),
+        );
+
+        let result = filter_logs(&json).unwrap();
+        // Oversized payload elision: the raw JSON contents must NOT leak, but
+        // the kind + byte-count marker should be present so the reader knows
+        // what was dropped.
+        assert!(
+            !result.text.contains(&big_json),
+            "oversized embedded JSON must be elided, but raw blob still present"
+        );
+        assert!(
+            result.text.contains("<json elided")
+                && result.text.contains("bytes="),
+            "elision marker missing from output:\n{}",
+            result.text
+        );
+        // Normal line must pass through untouched.
+        assert!(result.text.contains("Normal log line"));
     }
 
     #[test]
