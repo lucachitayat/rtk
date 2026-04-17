@@ -70,7 +70,7 @@ struct Cli {
     skip_env: bool,
 }
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 enum Commands {
     /// List directory contents with token-optimized output (proxy to native ls)
     Ls {
@@ -449,10 +449,18 @@ enum Commands {
         create: bool,
     },
 
+    /// Jest commands with compact output
+    Jest {
+        /// Additional jest arguments
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+
     /// Vitest commands with compact output
     Vitest {
-        #[command(subcommand)]
-        command: VitestCommands,
+        /// Additional vitest arguments
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
 
     /// Prisma commands with compact output (no ASCII art)
@@ -708,7 +716,7 @@ enum Commands {
     },
 }
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 enum HookCommands {
     /// Process Gemini CLI BeforeTool hook (reads JSON from stdin)
     Gemini,
@@ -716,7 +724,7 @@ enum HookCommands {
     Copilot,
 }
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 enum GitCommands {
     /// Condensed diff output
     Diff {
@@ -797,7 +805,7 @@ enum GitCommands {
     Other(Vec<OsString>),
 }
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 enum PnpmCommands {
     /// List installed packages (ultra-dense)
     List {
@@ -833,7 +841,7 @@ enum PnpmCommands {
     Other(Vec<OsString>),
 }
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 enum DockerCommands {
     /// List running containers
     Ps,
@@ -851,7 +859,7 @@ enum DockerCommands {
     Other(Vec<OsString>),
 }
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 enum ComposeCommands {
     /// List compose services (compact)
     Ps,
@@ -870,7 +878,7 @@ enum ComposeCommands {
     Other(Vec<OsString>),
 }
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 enum KubectlCommands {
     /// List pods
     Pods {
@@ -899,17 +907,7 @@ enum KubectlCommands {
     Other(Vec<OsString>),
 }
 
-#[derive(Subcommand)]
-enum VitestCommands {
-    /// Run tests with filtered output (90% token reduction)
-    Run {
-        /// Additional vitest arguments
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
-}
-
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 enum PrismaCommands {
     /// Generate Prisma Client (strip ASCII art)
     Generate {
@@ -930,7 +928,7 @@ enum PrismaCommands {
     },
 }
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 enum PrismaMigrateCommands {
     /// Create and apply migration
     Dev {
@@ -955,7 +953,7 @@ enum PrismaMigrateCommands {
     },
 }
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 enum CargoCommands {
     /// Build with compact output (strip Compiling lines, keep errors)
     Build {
@@ -998,7 +996,7 @@ enum CargoCommands {
     Other(Vec<OsString>),
 }
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 enum DotnetCommands {
     /// Build with compact output
     Build {
@@ -1025,7 +1023,7 @@ enum DotnetCommands {
     Other(Vec<OsString>),
 }
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 enum GoCommands {
     /// Run tests with compact output (90% token reduction via JSON streaming)
     Test {
@@ -1195,7 +1193,7 @@ fn run_fallback(parse_error: clap::Error) -> Result<i32> {
     }
 }
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 enum GtCommands {
     /// Compact stack log output
     Log {
@@ -1820,11 +1818,9 @@ fn run_cli() -> Result<i32> {
             0
         }
 
-        Commands::Vitest { command } => match command {
-            VitestCommands::Run { args } => {
-                vitest_cmd::run(vitest_cmd::VitestCommand::Run, &args, cli.verbose)?
-            }
-        },
+        Commands::Jest { ref args } | Commands::Vitest { ref args } => {
+            vitest_cmd::run_test(&cli.command, args, cli.verbose)?
+        }
 
         Commands::Prisma { command } => match command {
             PrismaCommands::Generate { args } => {
