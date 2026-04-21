@@ -170,7 +170,10 @@ pub fn run(upstream: &str) -> Result<()> {
         let mut resp = match rx.recv_timeout(Duration::from_secs(60)) {
             Ok(v) => v,
             Err(_) => {
-                eprintln!("[rtk mcp-proxy] timed out awaiting response for id {}", id_str);
+                eprintln!(
+                    "[rtk mcp-proxy] timed out awaiting response for id {}",
+                    id_str
+                );
                 pending
                     .lock()
                     .map_err(|_| anyhow!("pending map poisoned"))?
@@ -330,4 +333,7 @@ mod tests {
         let s = serde_json::json!("1");
         assert_ne!(id_key(&n), id_key(&s));
     }
+
+    // A1 and A5 live in tests/integration_mcp_rewrite.rs where
+    // `env!("CARGO_BIN_EXE_rtk")` is available. See that file.
 }
