@@ -5,26 +5,78 @@ All notable changes to rtk (Rust Token Killer) will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.37.0](https://github.com/lucachitayat/rtk/compare/v0.36.0...v0.37.0) (2026-04-17)
+## [0.38.0-fork.1](https://github.com/lucachitayat/rtk/compare/v0.37.0...v0.38.0-fork.1) (2026-04-21)
+
+Fork sync: merges upstream rtk-ai/rtk master through 0.37.2.
+
+### Features (fork)
+
+* **mcp:** add `rtk mcp-rewrite` and `rtk mcp-proxy` commands for JetBrains Rider MCP compaction.
+* **mcp:** new `src/mcp/` module — stdio JSON-RPC ↔ SSE proxy, Rider response compactor.
+* **mcp:** add `hooks/claude/rtk-mcp-rewrite.sh` integration script for PreToolUse hook.
+
+### Upstream sync
+
+* Merge upstream 0.37.0, 0.37.1, 0.37.2 (hook engine rewrite, streaming, pipe_cmd, Windows fixes, exclude_commands fixes). See upstream release notes below.
+
+## [0.37.2](https://github.com/rtk-ai/rtk/compare/v0.37.1...v0.37.2) (2026-04-20)
+
+
+### Bug Fixes
+
+* **discover:** exclude_commands bypass for env-prefix, sub cmd + regex ([ca4c59c](https://github.com/rtk-ai/rtk/commit/ca4c59c230306d310069bed3c0ba930068dc4dc4))
+* **discover:** exclude_commands bypass for env-prefix, sub cmd + regex ([42d3161](https://github.com/rtk-ai/rtk/commit/42d3161872713bc0b20ef49b0714add40c40d5e3))
+* **discover:** word boundary in exclude_commands ([0ea115b](https://github.com/rtk-ai/rtk/commit/0ea115bca5fa66daa69fda2f0eeaaf103346b3a4))
+* **docs:** add missing docs for exclude commands patterns ([2e401ac](https://github.com/rtk-ai/rtk/commit/2e401ac38feec88de8d5e46f0301c8a532b95614))
+* **hooks:** add regression test for windows native ([115e448](https://github.com/rtk-ai/rtk/commit/115e44853b8cdd2d7af3af2b52c9c31e924a45d3))
+* **hooks:** windows use 'rtk hook claude' no fallback ([da3c432](https://github.com/rtk-ai/rtk/commit/da3c432201240f0da9627d8cc6bc70e5b7f8bdfe))
+* **hooks:** windows use 'rtk hook claude' no fallback ([0e29650](https://github.com/rtk-ai/rtk/commit/0e29650e11959730f4c4a2e6d6c0519e14dc8595))
+* **tests:** windows regression test fix path ([13a73dd](https://github.com/rtk-ai/rtk/commit/13a73ddfd78460560a1f5fde94b54b1f848b41b5))
+
+## [0.37.1](https://github.com/rtk-ai/rtk/compare/v0.37.0...v0.37.1) (2026-04-18)
+
+
+### Bug Fixes
+
+* **docs:** user facing docs ([c8d6878](https://github.com/rtk-ai/rtk/commit/c8d68787fb8b31c52125e9fc7ea62e0aa590485f))
+
+## [0.37.0](https://github.com/rtk-ai/rtk/compare/v0.36.0...v0.37.0) (2026-04-17)
 
 
 ### Features
+
+* **discover:** handle more npm/npx/pnpm/pnpx patterns ([9e96caa](https://github.com/rtk-ai/rtk/commit/9e96caa0a18a95c84da82ba57716a9d3ef86d0c8))
+* **refacto-core:** binary hook w/ native cmd exec + streaming ([e7b7f9a](https://github.com/rtk-ai/rtk/commit/e7b7f9ab665a0f7303d41d23ad156d24e5e8964e))
+
+
+### Bug Fixes
+
+* **docs:** use release please changelog no manual ([7591a14](https://github.com/rtk-ai/rtk/commit/7591a14e4ceb732ab7ca160ac01a852926abe77a))
+* isolate cursor hook tests from local settings (determinist) ([d8ddefe](https://github.com/rtk-ai/rtk/commit/d8ddefe78efe25c35bb2a2f9083f2eacb9dd7274))
+* P0+P1 fixes from pre-merge review of hook engine ([df8e035](https://github.com/rtk-ai/rtk/commit/df8e03558d4d6cc2f5cbac91c63ab1b3b51d3bcd))
+* P0+P1 fixes from pre-merge review of hook engine ([d34389c](https://github.com/rtk-ai/rtk/commit/d34389c3d0936c2b0790e14f450bb50a28a7edf7))
+* rename ship.md to ship/SKILL.md to match develop ([5916ecd](https://github.com/rtk-ai/rtk/commit/5916ecd86fb319c2519a0b4fb2891309833a3bb4))
+* **runner:** preserve fd separation on command failure ([e92d099](https://github.com/rtk-ai/rtk/commit/e92d0993c93f0b732316dfa932d265aeca7488d6))
+* **stream:** missing stderr fields ([a1d46f3](https://github.com/rtk-ai/rtk/commit/a1d46f39c291e3356b9c26a062bde05ba1de591a))
+
+## [0.37.0-fork](https://github.com/lucachitayat/rtk/compare/v0.36.0...v0.37.0-fork) (2026-04-17)
+
+Fork-only release (superseded by upstream 0.37.0). Retained for history.
+
+### Features (fork)
 
 * **az:** add specialized `pipelines runs list` / `runs show` handlers; falls through for everything else.
 * **az:** generic fallback now preserves real values via `prune_az_noise` + compact JSON (was schema-only).
 * **az:** widen default `LOG_TAIL_LINES` from 50 → 200 and honor `RTK_AZ_LOG_TAIL=N` env override for per-invocation tuning.
 * **az:** elide oversized embedded JSON payloads (≥1 KB) inside log lines into `<json elided bytes=N>` markers, preserving the `KEY=` prefix (e.g. Azure `ENDPOINT_DATA_<guid>=`).
 
-
-### Bug Fixes
+### Bug Fixes (fork)
 
 * **az:** generic fallback emits compact single-line JSON (`serde_json::to_string`) instead of pretty-printed form — saves ~20% on large payloads.
 
-
-### Tests
+### Tests (fork)
 
 * **az:** +7 unit tests for `parse_log_tail`, default-tail truncation, `filter_timeline` `log.id` preservation contract, and embedded-JSON elision.
-
 
 ## [0.36.0](https://github.com/rtk-ai/rtk/compare/v0.35.0...v0.36.0) (2026-04-13)
 
@@ -76,7 +128,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * **telemetry:** consent, erasure, auth, docs ([2e4cc4b](https://github.com/rtk-ai/rtk/commit/2e4cc4bb5226444c8c0bfc827baf0c101c3759e8))
 * **telemetry:** non-terminal consent, single config load ([7821e98](https://github.com/rtk-ai/rtk/commit/7821e9872fd1f1ae9b40eb8a4458049869acc36b))
 * **telemetry:** RGPD-compliant, consent gate, erasure, privacy controls ([6a5bc84](https://github.com/rtk-ai/rtk/commit/6a5bc847e06cf6066e6f4aeed5a3ad0803a3649b))
->>>>>>> upstream/master
 
 ## [0.35.0](https://github.com/rtk-ai/rtk/compare/v0.34.3...v0.35.0) (2026-04-06)
 
@@ -153,7 +204,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * **security:** default to ask when no permission rule matches ([#886](https://github.com/rtk-ai/rtk/issues/886)) ([41a6c6b](https://github.com/rtk-ai/rtk/commit/41a6c6bf6da78a4754794fdc6a1469df2e327920))
 * **tracking:** use std::env::temp_dir() for compatibility (instead of unix tmp) ([e918661](https://github.com/rtk-ai/rtk/commit/e918661440d7b50321f0535032f52c5e87aaf3cb))
 
->>>>>>> upstream/master
 ## [Unreleased]
 
 ### Features
