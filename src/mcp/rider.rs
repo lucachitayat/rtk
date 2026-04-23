@@ -178,4 +178,51 @@ mod tests {
             );
         }
     }
+
+    // A2: Fixture test — compact a real Rider search_text response and verify
+    // every hit line preserves the `||match||` markers in grep-style format.
+    #[test]
+    fn test_search_text_rider_fixture_preserves_markers() {
+        use crate::mcp::response::rewrite_tool_result;
+        use lazy_static::lazy_static;
+        use regex::Regex;
+
+        lazy_static! {
+            static ref HIT_RE: Regex =
+                Regex::new(r"^[\w./]+:\d+:\d+\s+.*\|\|.*\|\|.*$").expect("valid regex");
+        }
+
+        let envelope_raw = include_str!("../../tests/fixtures/mcp/rider_search_text_response.json");
+        let envelope: serde_json::Value =
+            serde_json::from_str(envelope_raw).expect("fixture is valid JSON");
+
+        // Extract the inner text payload from the MCP envelope.
+        let payload = envelope["result"]["content"][0]["text"]
+            .as_str()
+            .expect("text field present");
+
+        let compacted = rewrite_tool_result("search_text", payload)
+            .expect("search_text compactor should handle fixture");
+
+        let hit_lines: Vec<&str> = compacted
+            .lines()
+            .filter(|l| !l.is_empty() && *l != "...")
+            .collect();
+
+        assert_eq!(
+            hit_lines.len(),
+            5,
+            "expected 5 hit lines, got {}:\n{}",
+            hit_lines.len(),
+            compacted
+        );
+
+        for line in &hit_lines {
+            assert!(
+                HIT_RE.is_match(line),
+                "line does not match expected pattern `path:line:col text||marker||text`:\n  {}",
+                line
+            );
+        }
+    }
 }
