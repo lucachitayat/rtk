@@ -6,6 +6,48 @@ Newest entries on top.
 
 ---
 
+## 2026-04-26 — Fork branching model: introduce `develop` branch
+
+Adopted upstream's two-track flow on the fork:
+- `develop` = active integration; tracks `upstream/develop` + carries fork-only work. New feature branches base here.
+- `master` = release pin at `0.38.0-fork.1`; advances only via deliberate promotion merges from `develop`.
+
+### Why now
+`CONTRIBUTING.md` (lines 182–232), `.github/workflows/ci.yml` (line 5: `branches: [develop, master]`), and `release-please-config.json` all already assume this layout — inherited from upstream and never wired up. The fork was running single-branch in defiance of its own docs. With `develop` in place, `cargo install` from `master` now means "last known-good fork version" — a real fallback if a `develop` merge regresses.
+
+### Initial develop content
+- Base: fork master (`3c9b8f9` = `0.38.0-fork.1`)
+- Merged: `upstream/develop` (`323cc3d`) — net +3299/-330 across 31 files. New filter: `glab` (1535 LOC). Auto-merged cleanly via `ort` strategy, no manual conflicts.
+- Merged: `chore/fork-notes-log` (transitively pulls in `test/mcp-integration-coverage`) — `FORK_NOTES.md` + 5 MCP integration test gaps + `rtk init` migrator note.
+- Style: `cargo fmt` applied to fork-only `src/mcp/proxy.rs`, `src/mcp/response.rs` (had never been formatted).
+
+### Develop version
+`0.39.0-dev-fork.0`. Master pinned at `0.38.0-fork.1` until a stable cut. Per fork rule, develop > upstream/develop (`0.34.3`) and > upstream/master (`0.37.2`) ✓.
+
+### Rollback anchor
+Tag: `fork/master-pre-develop-20260426 → 3c9b8f9`. If anything goes sideways:
+```
+git switch master
+git branch -D develop
+git push origin --delete develop
+git tag -d fork/master-pre-develop-20260426
+```
+
+### Build gate (verified before push)
+- `cargo fmt --all -- --check` ✅ (after applying fmt to `mcp/*.rs`)
+- `cargo clippy --all-targets` — 22 warnings, 0 errors. **Identical warning location set vs. master**; net 0 new warnings introduced. All pre-existing tech debt from fork az/mcp + upstream develop. Out of scope to fix here.
+- `cargo test --all` — 1763 passed, 9 ignored, 0 failed.
+
+### Out of scope (follow-up tasks)
+- [ ] `install.sh` and `scripts/check-installation.sh` still hardcode `rtk-ai/rtk` master URL — needs fork-pointing fix with optional `BRANCH=develop|master` env var so "build master" actually pulls fork master.
+- [ ] In-flight branches (`feat/az-cli-support`, `fix/disambiguate-rtk-name`) stay where they are; new branches base off `develop` going forward. Both are PRs to upstream and should rebase onto the corresponding `upstream/develop` head, not fork develop.
+- [ ] `chore/fork-notes-log` and `test/mcp-integration-coverage` are now merged into develop and can be deleted (local + origin) at convenience.
+- [ ] Memory `reference_no_ci_sole_maintainer.md` flagged for review: `ci.yml` triggers on `[develop, master]` PRs but only fires if Actions enabled on `lucachitayat/rtk`. Verify on GitHub Settings → Actions before relying on CI.
+- [ ] `release-please` config exists but isn't driving releases on the fork. Revisit if/when wanted.
+- [ ] Backlog clippy warnings (22 inherited) — separate cleanup task.
+
+---
+
 ## 2026-04-22 — `rtk init` auto-migrator silent no-op on clean-install
 
 ### Symptom
