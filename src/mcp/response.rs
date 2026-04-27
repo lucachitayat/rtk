@@ -71,7 +71,10 @@ fn compact_search_hits(json: &Value) -> Option<String> {
     for item in items {
         let path = item.get("filePath").and_then(|v| v.as_str()).unwrap_or("?");
         let line = item.get("startLine").and_then(|v| v.as_u64()).unwrap_or(0);
-        let col = item.get("startColumn").and_then(|v| v.as_u64()).unwrap_or(0);
+        let col = item
+            .get("startColumn")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
         let text = item
             .get("lineText")
             .and_then(|v| v.as_str())

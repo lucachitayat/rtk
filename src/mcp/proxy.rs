@@ -170,7 +170,10 @@ pub fn run(upstream: &str) -> Result<()> {
         let mut resp = match rx.recv_timeout(Duration::from_secs(60)) {
             Ok(v) => v,
             Err(_) => {
-                eprintln!("[rtk mcp-proxy] timed out awaiting response for id {}", id_str);
+                eprintln!(
+                    "[rtk mcp-proxy] timed out awaiting response for id {}",
+                    id_str
+                );
                 pending
                     .lock()
                     .map_err(|_| anyhow!("pending map poisoned"))?
