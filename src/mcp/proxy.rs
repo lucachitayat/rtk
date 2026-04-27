@@ -333,4 +333,7 @@ mod tests {
         let s = serde_json::json!("1");
         assert_ne!(id_key(&n), id_key(&s));
     }
+
+    // A1 and A5 live in tests/integration_mcp_rewrite.rs where
+    // `env!("CARGO_BIN_EXE_rtk")` is available. See that file.
 }

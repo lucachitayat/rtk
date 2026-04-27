@@ -243,4 +243,58 @@ mod tests {
         });
         assert!(rewrite_envelope(&mut resp, "search_file").is_none());
     }
+
+    // A3: Token savings contract — 50-hit search_text response must compact to
+    // <40% of original size (i.e. >60% savings).
+    #[test]
+    fn test_compactor_token_savings_search_text() {
+        // Build a 50-hit mock payload in memory.
+        let items: Vec<serde_json::Value> = (0..50)
+            .map(|i| {
+                json!({
+                    "filePath": format!("src/Module{}.cs", i),
+                    "startLine": i * 10 + 1,
+                    "startColumn": 5,
+                    "endLine": i * 10 + 1,
+                    "endColumn": 12,
+                    "startOffset": i * 500,
+                    "endOffset": i * 500 + 7,
+                    "lineText": format!("    public void Process{}(||IService|| svc, string arg1, string arg2)", i),
+                    "someExtraField": "verbose metadata that burns tokens",
+                    "anotherExtraField": 12345,
+                    "yetAnotherField": true
+                })
+            })
+            .collect();
+
+        let raw_payload = serde_json::to_string(&json!({
+            "items": items,
+            "more": false,
+            "totalCount": 50,
+            "queryTime": 42,
+            "someVerboseMetadata": "lots of extra data the agent never reads"
+        }))
+        .expect("serialization should succeed");
+
+        let compacted = rewrite_tool_result("search_text", &raw_payload)
+            .expect("50-hit payload should compact");
+
+        let before = raw_payload.len();
+        let after = compacted.len();
+        assert!(
+            after < before * 40 / 100,
+            "expected <40% of raw, got {}/{} ({:.0}%)",
+            after,
+            before,
+            after as f64 / before as f64 * 100.0
+        );
+    }
+
+    // A3 snapshot: small 3-hit fixture for reviewable snapshot.
+    #[test]
+    fn test_compactor_search_text_snapshot() {
+        let payload = r#"{"items":[{"filePath":"src/Alpha.cs","startLine":10,"startColumn":3,"endLine":10,"endColumn":9,"startOffset":200,"endOffset":206,"lineText":"  public ||ILogger|| GetLogger()"},{"filePath":"src/Beta.cs","startLine":25,"startColumn":8,"endLine":25,"endColumn":14,"startOffset":700,"endOffset":706,"lineText":"  private ||ILogger|| _logger = null;"},{"filePath":"src/Gamma.cs","startLine":5,"startColumn":1,"endLine":5,"endColumn":7,"startOffset":50,"endOffset":56,"lineText":"||ILogger|| factory"}],"more":false}"#;
+        let out = rewrite_tool_result("search_text", payload).expect("3-hit payload compacts");
+        insta::assert_snapshot!(out);
+    }
 }
