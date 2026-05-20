@@ -7,14 +7,12 @@
 use crate::core::tee::force_tee_hint;
 use crate::core::tracking;
 use crate::core::utils::{exit_code_from_output, exit_code_from_status, resolved_command, truncate_iso_date};
-use crate::json_cmd;
 use anyhow::{Context, Result};
 use lazy_static::lazy_static;
 use regex::Regex;
 use serde_json::Value;
 
 const MAX_ITEMS: usize = 20;
-const GENERIC_COMPRESS_DEPTH: usize = 8;
 const MAX_GENERIC_RAW_BYTES: usize = 20_000;
 /// Default tail size for `az devops invoke --resource logs`. Integration-test
 /// failure diagnosis (Reqnroll, dotnet-test) needs ~70-200 lines between the
@@ -51,7 +49,7 @@ fn elide_oversized_embedded_json(line: &str, threshold: usize) -> Option<String>
     if line.len() < threshold {
         return None;
     }
-    let json_start = line.find(|c: char| c == '{' || c == '[')?;
+    let json_start = line.find(['{', '['])?;
     let tail = &line[json_start..];
     if tail.len() < threshold {
         return None;
@@ -1856,7 +1854,7 @@ mod tests {
     fn test_filter_logs_elides_oversized_embedded_payload() {
         // 2 KB JSON blob stuffed inside an Azure ENDPOINT_DATA env var line
         // (this is the real shape observed in AutoMiner build 298285, log 32).
-        let big_json: String = std::iter::repeat('a').take(2048).collect();
+        let big_json: String = "a".repeat(2048);
         let big_line = format!(
             "2026-04-17T17:27:09.4953295Z ENDPOINT_DATA_debac320={{\"environment\":\"AzureCloud\",\"blob\":\"{}\"}}",
             big_json

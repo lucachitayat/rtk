@@ -4,7 +4,6 @@ mod core;
 mod discover;
 mod hooks;
 mod learn;
-mod mcp;
 mod parser;
 
 // Re-export command modules for routing
@@ -765,45 +764,6 @@ enum Commands {
         /// Accepts multiple args: `rtk rewrite ls -al` is equivalent to `rtk rewrite "ls -al"`
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
-    },
-
-    /// Rewrite an MCP tool input JSON to its RTK-optimized equivalent
-    ///
-    /// Exits 0 with rewritten tool_input JSON on stdout if a rewrite applies.
-    /// Exits 1 with no output if the tool has no RTK equivalent.
-    ///
-    /// Used by PreToolUse hooks that match on MCP tool names (`mcp__*`).
-    /// Example:
-    ///   rtk mcp-rewrite mcp__rider__search_text '{"q":"ILogger","limit":10}'
-    #[command(name = "mcp-rewrite")]
-    McpRewrite {
-        /// Fully-qualified MCP tool name (e.g. `mcp__rider__search_text`)
-        tool_name: String,
-        /// `tool_input` as a JSON object string
-        input_json: String,
-    },
-
-    /// MCP proxy: stdio JSON-RPC <-> upstream legacy-SSE MCP server
-    ///
-    /// Speaks stdio JSON-RPC to Claude Code (configure in .mcp.json) and
-    /// forwards to an upstream MCP server that uses the legacy SSE transport
-    /// (e.g. JetBrains Rider on port 64343). Response payloads for known
-    /// tools are compacted into Grep-style plain text for token efficiency.
-    ///
-    /// Example .mcp.json entry:
-    ///   {
-    ///     "mcpServers": {
-    ///       "rider-proxy": {
-    ///         "command": "rtk",
-    ///         "args": ["mcp-proxy", "--upstream", "http://localhost:64343"]
-    ///       }
-    ///     }
-    ///   }
-    #[command(name = "mcp-proxy")]
-    McpProxy {
-        /// Upstream MCP server base URL (no path).
-        #[arg(long, default_value = "http://localhost:64343")]
-        upstream: String,
     },
 
     /// Hook processors for LLM CLI tools (Gemini CLI, Copilot, etc.)
@@ -2290,19 +2250,6 @@ fn run_cli() -> Result<i32> {
                     .with_context(|| format!("Failed to execute: {}", raw))?;
                 status.code().unwrap_or(1)
             }
-        }
-
-        Commands::McpRewrite {
-            tool_name,
-            input_json,
-        } => {
-            hooks::mcp_rewrite_cmd::run(&tool_name, &input_json)?;
-            0
-        }
-
-        Commands::McpProxy { upstream } => {
-            mcp::proxy::run(&upstream)?;
-            0
         }
 
         Commands::Proxy { args } => {

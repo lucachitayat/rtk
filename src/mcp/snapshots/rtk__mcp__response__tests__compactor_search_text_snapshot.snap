@@ -1,7 +1,0 @@
----
-source: src/mcp/response.rs
-expression: out
----
-src/Alpha.cs:10:3   public ||ILogger|| GetLogger()
-src/Beta.cs:25:8   private ||ILogger|| _logger = null;
-src/Gamma.cs:5:1 ||ILogger|| factory

@@ -7,7 +7,6 @@ pub mod hook_check;
 pub mod hook_cmd;
 pub mod init;
 pub mod integrity;
-pub mod mcp_rewrite_cmd;
 pub mod permissions;
 pub mod rewrite_cmd;
 pub mod trust;

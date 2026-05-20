@@ -6,6 +6,48 @@ Newest entries on top.
 
 ---
 
+## 2026-05-21 — Drop fork-owned MCP bridge (Path A); sync upstream/develop @ a04aa7e
+
+Merged 56 commits from `upstream/develop` (`15a0d2e..a04aa7e`) into `develop` via `merge/upstream-develop-20260521`. Took **Path A** from the upgrade plan: drop the fork-owned MCP code rather than re-wire it across upstream's lint-tightening and `AgentTarget::Hermes` additions.
+
+### Why drop
+- Rider IDE usage has fallen off; the bridge (`rtk mcp-proxy`) and Rider tool-input rewriter (`rtk mcp-rewrite`) were bespoke for that workflow.
+- Future upstream syncs become routine without fork-only enum variants in `src/main.rs` and a fork-only module tree.
+- Recovery is cheap (see anchor below) — the code is one `git show` away.
+
+### Recovery anchor
+- Tag: **`fork/mcp-bridge-archive-20260521`** → `e104843` (pre-merge `develop` tip), pushed to `origin`.
+- Resurrect with: `git show fork/mcp-bridge-archive-20260521 -- src/mcp/ src/hooks/mcp_rewrite_cmd.rs tests/integration_mcp_rewrite.rs tests/fixtures/mcp/`
+- Origin commits if cherry-picking: `463886b` (feat), `3d9eb8a` (test).
+
+### What landed from upstream
+Notable, in priority of day-to-day relevance:
+- `rtk pipe <filter>` — generic stdin→named-filter (extends `rtk grep` coverage to piped contexts).
+- `kubectl get pods/services` compaction (#1720); `docker compose --tail` forward (#1885); `docker ps` / `ps -a` split (#1895 batch).
+- `git push` streaming via new `src/core/stream.rs` framework (#1531).
+- Tee truncation caps + tail hints (#1928).
+- `rtk init --dry-run` + parallel-safe test coverage; `AgentTarget::Hermes` variant.
+- `cargo clippy --deny warnings` mandatory in CI — drove the az_cmd lint cleanup below.
+
+### Fork-side cleanup forced by lint tightening (rust 1.94.0 + `-D warnings`)
+- `src/cmds/cloud/az_cmd.rs`: removed unused `use crate::json_cmd;` import.
+- `src/cmds/cloud/az_cmd.rs`: removed dead `const GENERIC_COMPRESS_DEPTH`.
+- `src/cmds/cloud/az_cmd.rs:52`: collapsed manual char comparison to slice (`line.find(['{', '['])`).
+- `src/cmds/cloud/az_cmd.rs:1857`: replaced `iter::repeat().take().collect()` with `"a".repeat(N)`.
+
+### Version
+`0.40.0-dev-fork.1` → `0.41.0-dev-fork.0` (upstream cadence at rc.229 of 0.41.x).
+
+### Build gate
+- `cargo fmt --all` ✅
+- `cargo clippy --all-targets` ✅ (0 warnings)
+- `cargo test --all` ✅ (1958 passed, 0 failed, 6 ignored)
+
+### Files removed
+`src/mcp/{mod,proxy,response,rider}.rs`, `src/mcp/snapshots/`, `src/hooks/mcp_rewrite_cmd.rs`, `tests/integration_mcp_rewrite.rs`, `tests/fixtures/mcp/rider_search_text_response.json`. The `mod mcp;` declaration, `Commands::McpRewrite` / `Commands::McpProxy` variants + dispatch arms, and `pub mod mcp_rewrite_cmd;` export were removed from `src/main.rs` and `src/hooks/mod.rs`.
+
+---
+
 ## 2026-04-26 — Fork branching model: introduce `develop` branch
 
 Adopted upstream's two-track flow on the fork:
