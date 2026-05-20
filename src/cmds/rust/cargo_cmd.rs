@@ -103,10 +103,7 @@ impl BlockHandler for CargoBuildHandler {
             self.finished_line = Some(trimmed.to_string());
             return true;
         }
-        if line.starts_with("warning:")
-            && line.contains("generated")
-            && line.contains("warning")
-        {
+        if line.starts_with("warning:") && line.contains("generated") && line.contains("warning") {
             return true;
         }
         if (line.starts_with("error:") || line.starts_with("error["))
@@ -539,7 +536,12 @@ fn filter_cargo_install(output: &str) -> String {
         }
 
         if errors.len() > 15 {
-            result.push_str(&format!("\n... +{} more issues\n", errors.len() - 15));
+            result.push_str(&format!("\n… +{} more issues\n", errors.len() - 15));
+            let all_errors = errors.join("\n\n");
+            if let Some(hint) = crate::core::tee::force_tee_hint(&all_errors, "cargo-build-errors")
+            {
+                result.push_str(&format!("  {}\n", hint));
+            }
         }
 
         return result.trim().to_string();
@@ -838,7 +840,15 @@ fn filter_cargo_build(output: &str) -> String {
         }
     }
     if blocks.len() > 15 {
-        result.push_str(&format!("\n... +{} more issues\n", blocks.len() - 15));
+        result.push_str(&format!("\n… +{} more issues\n", blocks.len() - 15));
+        let all_blocks: String = blocks
+            .iter()
+            .map(|b| b.join("\n"))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if let Some(hint) = crate::core::tee::force_tee_hint(&all_blocks, "cargo-check-issues") {
+            result.push_str(&format!("  {}\n", hint));
+        }
     }
     result.trim().to_string()
 }
@@ -1031,11 +1041,18 @@ pub(crate) fn filter_cargo_test(output: &str) -> String {
     if !failures.is_empty() {
         result.push_str(&format!("FAILURES ({}):\n", failures.len()));
         result.push_str("═══════════════════════════════════════\n");
-        for (i, failure) in failures.iter().enumerate().take(10) {
+        const MAX_FAILURES: usize = 10;
+        for (i, failure) in failures.iter().enumerate().take(MAX_FAILURES) {
             result.push_str(&format!("{}. {}\n", i + 1, truncate(failure, 200)));
         }
-        if failures.len() > 10 {
-            result.push_str(&format!("\n... +{} more failures\n", failures.len() - 10));
+        if failures.len() > MAX_FAILURES {
+            result.push_str(&format!("\n… +{} more failures\n", failures.len() - MAX_FAILURES));
+            let all_failures = failures.join("\n\n");
+            if let Some(hint) =
+                crate::core::tee::force_tee_hint(&all_failures, "cargo-test-failures")
+            {
+                result.push_str(&format!("  {}\n", hint));
+            }
         }
         result.push('\n');
     }
@@ -1133,7 +1150,11 @@ fn filter_cargo_clippy(output: &str) -> String {
                     line.to_string()
                 }
             } else {
-                let prefix = if is_error_line { "error: " } else { "warning: " };
+                let prefix = if is_error_line {
+                    "error: "
+                } else {
+                    "warning: "
+                };
                 line.strip_prefix(prefix).unwrap_or(line).to_string()
             };
         } else if line.trim_start().starts_with("--> ") {
@@ -1188,26 +1209,47 @@ fn filter_cargo_clippy(output: &str) -> String {
             result.push('\n');
         }
         if error_blocks.len() > 10 {
-            result.push_str(&format!("  ... +{} more errors\n", error_blocks.len() - 10));
+            result.push_str(&format!("  … +{} more errors\n", error_blocks.len() - 10));
+            let all_blocks: String = error_blocks
+                .iter()
+                .map(|b| b.join("\n"))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            if let Some(hint) =
+                crate::core::tee::force_tee_hint(&all_blocks, "cargo-clippy-errors")
+            {
+                result.push_str(&format!("  {}\n", hint));
+            }
         }
     }
 
     // Sort warning rules by frequency
     let mut rule_counts: Vec<_> = by_rule.iter().collect();
-    rule_counts.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+    rule_counts.sort_by_key(|b| std::cmp::Reverse(b.1.len()));
 
-    for (rule, locations) in rule_counts.iter().take(15) {
+    const MAX_RULES: usize = 15;
+    for (rule, locations) in rule_counts.iter().take(MAX_RULES) {
         result.push_str(&format!("  {} ({}x)\n", rule, locations.len()));
         for loc in locations.iter().take(3) {
             result.push_str(&format!("    {}\n", loc));
         }
         if locations.len() > 3 {
-            result.push_str(&format!("    ... +{} more\n", locations.len() - 3));
+            result.push_str(&format!("    … +{} more\n", locations.len() - 3));
         }
     }
 
-    if by_rule.len() > 15 {
-        result.push_str(&format!("\n... +{} more rules\n", by_rule.len() - 15));
+    if by_rule.len() > MAX_RULES {
+        result.push_str(&format!("\n… +{} more rules\n", by_rule.len() - MAX_RULES));
+        let all_rules = rule_counts
+            .iter()
+            .map(|(rule, locs)| format!("{} ({}x)", rule, locs.len()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if let Some(hint) =
+            crate::core::tee::force_tee_tail_hint(&all_rules, "cargo-clippy-rules", MAX_RULES + 1)
+        {
+            result.push_str(&format!("  {}\n", hint));
+        }
     }
 
     result.trim().to_string()
@@ -1632,10 +1674,22 @@ error[E0308]: mismatched types
 error: aborting due to 1 previous error
 "#;
         let result = filter_cargo_clippy(output);
-        assert!(result.contains("cargo clippy: 1 errors, 0 warnings"), "got: {}", result);
-        assert!(result.contains("error[E0308]: mismatched types"), "got: {}", result);
+        assert!(
+            result.contains("cargo clippy: 1 errors, 0 warnings"),
+            "got: {}",
+            result
+        );
+        assert!(
+            result.contains("error[E0308]: mismatched types"),
+            "got: {}",
+            result
+        );
         assert!(result.contains("src/main.rs:10:5"), "got: {}", result);
-        assert!(result.contains("expected `i32`, found `&str`"), "got: {}", result);
+        assert!(
+            result.contains("expected `i32`, found `&str`"),
+            "got: {}",
+            result
+        );
     }
 
     #[test]

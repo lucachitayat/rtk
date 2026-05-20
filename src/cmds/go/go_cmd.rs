@@ -341,10 +341,8 @@ pub(crate) fn filter_go_test_json(output: &str) -> String {
         let pkg_result = packages.entry(package.clone()).or_default();
 
         match event.action.as_str() {
-            "pass" => {
-                if event.test.is_some() {
-                    pkg_result.pass += 1;
-                }
+            "pass" if event.test.is_some() => {
+                pkg_result.pass += 1;
             }
             "fail" => {
                 if let Some(test) = &event.test {
@@ -370,10 +368,8 @@ pub(crate) fn filter_go_test_json(output: &str) -> String {
                     pkg_result.package_failed = true;
                 }
             }
-            "skip" => {
-                if event.test.is_some() {
-                    pkg_result.skip += 1;
-                }
+            "skip" if event.test.is_some() => {
+                pkg_result.skip += 1;
             }
             "output" => {
                 if let Some(output_text) = &event.output {
@@ -591,12 +587,17 @@ pub(crate) fn filter_go_build(output: &str) -> String {
     result.push_str(&format!("Go build: {} errors\n", errors.len()));
     result.push_str("═══════════════════════════════════════\n");
 
-    for (i, error) in errors.iter().take(20).enumerate() {
+    const MAX_GO_BUILD_ERRORS: usize = 20;
+    for (i, error) in errors.iter().take(MAX_GO_BUILD_ERRORS).enumerate() {
         result.push_str(&format!("{}. {}\n", i + 1, truncate(error, 120)));
     }
 
-    if errors.len() > 20 {
-        result.push_str(&format!("\n... +{} more errors\n", errors.len() - 20));
+    if errors.len() > MAX_GO_BUILD_ERRORS {
+        result.push_str(&format!("\n… +{} more errors\n", errors.len() - MAX_GO_BUILD_ERRORS));
+        let all_errors = errors.join("\n");
+        if let Some(hint) = crate::core::tee::force_tee_tail_hint(&all_errors, "go-build", MAX_GO_BUILD_ERRORS + 1) {
+            result.push_str(&format!("  {}\n", hint));
+        }
     }
 
     result.trim().to_string()
@@ -626,9 +627,7 @@ fn is_go_build_error_line(line: &str) -> bool {
 
     // Canonical compiler/config error locations: file:line:col: ...
     let is_go_config_location = !lower.starts_with("go: ")
-        && (lower.contains("go.mod:")
-            || lower.contains("go.work:")
-            || lower.contains("go.sum:"));
+        && (lower.contains("go.mod:") || lower.contains("go.work:") || lower.contains("go.sum:"));
     if trimmed.contains(".go:") || is_go_config_location {
         return true;
     }
@@ -680,12 +679,17 @@ fn filter_go_vet(output: &str) -> String {
     result.push_str(&format!("Go vet: {} issues\n", issues.len()));
     result.push_str("═══════════════════════════════════════\n");
 
-    for (i, issue) in issues.iter().take(20).enumerate() {
+    const MAX_GO_VET_ISSUES: usize = 20;
+    for (i, issue) in issues.iter().take(MAX_GO_VET_ISSUES).enumerate() {
         result.push_str(&format!("{}. {}\n", i + 1, truncate(issue, 120)));
     }
 
-    if issues.len() > 20 {
-        result.push_str(&format!("\n... +{} more issues\n", issues.len() - 20));
+    if issues.len() > MAX_GO_VET_ISSUES {
+        result.push_str(&format!("\n… +{} more issues\n", issues.len() - MAX_GO_VET_ISSUES));
+        let all_issues = issues.join("\n");
+        if let Some(hint) = crate::core::tee::force_tee_tail_hint(&all_issues, "go-vet", MAX_GO_VET_ISSUES + 1) {
+            result.push_str(&format!("  {}\n", hint));
+        }
     }
 
     result.trim().to_string()
@@ -895,9 +899,7 @@ go: downloading golang.org/x/xerrors v0.0.0-20220907171357-04be3eba64a2"#;
     #[test]
     fn test_is_go_build_error_line_recognizes_real_compiler_errors() {
         assert!(is_go_build_error_line("undefined: missingFunc"));
-        assert!(is_go_build_error_line(
-            "cannot find package \"foo/bar\""
-        ));
+        assert!(is_go_build_error_line("cannot find package \"foo/bar\""));
         assert!(is_go_build_error_line(
             "found packages a (a.go) and b (b.go) in /tmp/rtk-go-build-probe-mix"
         ));
@@ -981,7 +983,9 @@ go: cannot load module missing listed in go.work file: open missing/go.mod: no s
 
         let result = filter_go_build(output);
         assert!(result.contains("3 errors"));
-        assert!(result.contains("go.mod file not found in current directory or any parent directory"));
+        assert!(
+            result.contains("go.mod file not found in current directory or any parent directory")
+        );
         assert!(result.contains("no Go files in /tmp/example"));
         assert!(result.contains("go: cannot load module missing listed in go.work file"));
     }
