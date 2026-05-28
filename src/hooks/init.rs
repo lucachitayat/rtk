@@ -14,13 +14,17 @@ use crate::hooks::constants::{
 use super::constants::{
     BEFORE_TOOL_KEY, CLAUDE_DIR, CLAUDE_HOOK_COMMAND, CODEX_DIR, CURSOR_HOOK_COMMAND,
     GEMINI_HOOK_FILE, HERMES_DIR, HERMES_PLUGINS_SUBDIR, HERMES_PLUGIN_INIT_FILE,
-    HERMES_PLUGIN_MANIFEST_FILE, HERMES_PLUGIN_NAME, HOOKS_JSON, HOOKS_SUBDIR, PRE_TOOL_USE_KEY,
-    REWRITE_HOOK_FILE, SETTINGS_JSON,
+    HERMES_PLUGIN_MANIFEST_FILE, HERMES_PLUGIN_NAME, HOOKS_JSON, HOOKS_SUBDIR,
+    PI_CODING_AGENT_DIR_ENV, PI_DIR, PI_EXTENSIONS_SUBDIR, PI_LOCAL_DIR, PI_PLUGIN_FILE,
+    PRE_TOOL_USE_KEY, REWRITE_HOOK_FILE, SETTINGS_JSON,
 };
 use super::integrity;
 
 // Embedded OpenCode plugin (auto-rewrite)
 const OPENCODE_PLUGIN: &str = include_str!("../../hooks/opencode/rtk.ts");
+
+// Embedded Pi extension (auto-rewrite)
+const PI_PLUGIN: &str = include_str!("../../hooks/pi/rtk.ts");
 
 // Embedded slim RTK awareness instructions
 const RTK_SLIM: &str = include_str!("../../hooks/claude/rtk-awareness.md");
@@ -600,12 +604,13 @@ fn remove_hook_from_settings(ctx: InitContext) -> Result<bool> {
     Ok(removed)
 }
 
-/// Full uninstall for Claude, Gemini, Codex, or Cursor artifacts.
+/// Full uninstall for Claude, Gemini, Codex, Cursor, or Pi artifacts.
 pub fn uninstall(
     global: bool,
     gemini: bool,
     codex: bool,
     cursor: bool,
+    pi: bool,
     ctx: InitContext,
 ) -> Result<()> {
     let InitContext { verbose, dry_run } = ctx;
@@ -641,6 +646,11 @@ pub fn uninstall(
         if dry_run {
             print_dry_run_footer();
         }
+        return Ok(());
+    }
+
+    if pi {
+        uninstall_pi(global, ctx)?;
         return Ok(());
     }
 
@@ -2749,6 +2759,144 @@ fn codex_rtk_md_ref(codex_dir: &Path) -> String {
 
 fn resolve_opencode_dir() -> Result<PathBuf> {
     resolve_home_subdir(CONFIG_DIR).map(|p| p.join(OPENCODE_SUBDIR))
+}
+
+// ─── Pi coding agent support ──────────────────────────────────────────
+
+/// Resolve Pi config directory, honouring `PI_CODING_AGENT_DIR` override.
+fn resolve_pi_dir() -> Result<PathBuf> {
+    if let Ok(dir) = std::env::var(PI_CODING_AGENT_DIR_ENV) {
+        if !dir.is_empty() {
+            return Ok(PathBuf::from(dir));
+        }
+    }
+    resolve_home_subdir(PI_DIR)
+}
+
+/// Return the path to the installed Pi extension file.
+fn pi_plugin_path(pi_dir: &Path) -> PathBuf {
+    pi_dir.join(PI_EXTENSIONS_SUBDIR).join(PI_PLUGIN_FILE)
+}
+
+/// Return the Pi extension install path for the given scope.
+/// global=true  → `$PI_CODING_AGENT_DIR/extensions/rtk.ts`
+/// global=false → `./.pi/extensions/rtk.ts`
+fn pi_plugin_path_for_scope(global: bool) -> Result<PathBuf> {
+    if global {
+        Ok(pi_plugin_path(&resolve_pi_dir()?))
+    } else {
+        Ok(PathBuf::from(PI_LOCAL_DIR)
+            .join(PI_EXTENSIONS_SUBDIR)
+            .join(PI_PLUGIN_FILE))
+    }
+}
+
+/// Write the Pi extension file if missing or outdated. Returns true if written.
+fn ensure_pi_plugin_installed(path: &Path, ctx: InitContext) -> Result<bool> {
+    write_if_changed(path, PI_PLUGIN, "Pi extension", ctx)
+}
+
+/// Create the Pi extensions directory, or in dry-run mode, print a message only if
+/// the directory does not yet exist (avoids reporting no-op changes).
+fn ensure_pi_extensions_dir(parent: &Path, name: &str, ctx: InitContext) -> Result<()> {
+    let InitContext { dry_run, .. } = ctx;
+    if dry_run {
+        if !parent.exists() {
+            println!("[dry-run] would create {}: {}", name, parent.display());
+        }
+    } else {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create {}: {}", name, parent.display()))?;
+    }
+    Ok(())
+}
+
+/// Uninstall Pi extension for the given scope.
+/// Mirrors `uninstall_codex` / `uninstall_hermes`: extracted from the dispatcher
+/// so it can be tested and reasoned about independently.
+fn uninstall_pi(global: bool, ctx: InitContext) -> Result<()> {
+    let InitContext { verbose, dry_run } = ctx;
+    let plugin_path = pi_plugin_path_for_scope(global)?;
+    let mut removed: Vec<String> = Vec::new();
+
+    if plugin_path.exists() {
+        if dry_run {
+            println!(
+                "[dry-run] would remove Pi extension: {}",
+                plugin_path.display()
+            );
+        } else {
+            // nosemgrep: filesystem-deletion -- Pi uninstall removes only the RTK-managed extension file.
+            fs::remove_file(&plugin_path).with_context(|| {
+                format!("Failed to remove Pi extension: {}", plugin_path.display())
+            })?;
+            if verbose > 0 {
+                eprintln!("Removed Pi extension: {}", plugin_path.display());
+            }
+            removed.push(format!("Pi extension: {}", plugin_path.display()));
+        }
+    }
+
+    if dry_run {
+        print_dry_run_footer();
+    } else if !removed.is_empty() {
+        println!("RTK uninstalled (Pi):");
+        for item in &removed {
+            println!("  - {}", item);
+        }
+        println!("\nRestart pi to apply changes.");
+    } else {
+        println!("RTK Pi extension was not installed (nothing to remove)");
+    }
+    Ok(())
+}
+
+/// Install the Pi extension (hook-only; no AGENTS.md injection).
+///
+/// global=true  → `$PI_CODING_AGENT_DIR/extensions/rtk.ts`
+/// global=false → `.pi/extensions/rtk.ts`
+pub fn run_pi_mode(global: bool, ctx: InitContext) -> Result<()> {
+    let InitContext {
+        verbose: _,
+        dry_run,
+    } = ctx;
+    let plugin_path = if global {
+        let pi_dir = resolve_pi_dir()?;
+        let path = pi_plugin_path(&pi_dir);
+        if let Some(parent) = path.parent() {
+            ensure_pi_extensions_dir(parent, "Pi extensions directory", ctx)?;
+        }
+        path
+    } else {
+        let path = pi_plugin_path_for_scope(false)?;
+        if let Some(parent) = path.parent() {
+            ensure_pi_extensions_dir(parent, "local Pi extensions directory", ctx)?;
+        }
+        path
+    };
+
+    let installed = ensure_pi_plugin_installed(&plugin_path, ctx)?;
+
+    if dry_run {
+        print_dry_run_footer();
+    } else {
+        print_pi_result(&plugin_path, installed);
+    }
+
+    Ok(())
+}
+
+fn print_pi_result(plugin_path: &Path, installed: bool) {
+    let status = if installed {
+        "installed"
+    } else {
+        "already up to date"
+    };
+    println!("RTK Pi extension {}:", status);
+    println!("  Extension: {}", plugin_path.display());
+    println!();
+    println!("Pi will load the extension automatically on next start.");
+    println!("Verify: pi -e {} --no-session", plugin_path.display());
 }
 
 /// Return OpenCode plugin path: ~/.config/opencode/plugins/rtk.ts
@@ -5396,6 +5544,9 @@ mod tests {
 
     use std::sync::Mutex;
     static CLAUDE_DIR_LOCK: Mutex<()> = Mutex::new(());
+    static PI_DIR_LOCK: Mutex<()> = Mutex::new(());
+    /// Serialises all tests that mutate the process-wide working directory.
+    static CWD_LOCK: Mutex<()> = Mutex::new(());
 
     fn with_claude_dir_override<F: FnOnce(&Path)>(tmp: &TempDir, f: F) {
         let _guard = CLAUDE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -5408,6 +5559,20 @@ mod tests {
         match orig {
             Some(v) => std::env::set_var("RTK_CLAUDE_DIR", v),
             None => std::env::remove_var("RTK_CLAUDE_DIR"),
+        }
+    }
+
+    fn with_pi_dir_override<F: FnOnce(&Path)>(tmp: &TempDir, f: F) {
+        let _guard = PI_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let pi_dir = tmp.path().join("pi_agent");
+        fs::create_dir_all(&pi_dir).unwrap();
+
+        let orig = std::env::var_os(PI_CODING_AGENT_DIR_ENV);
+        std::env::set_var(PI_CODING_AGENT_DIR_ENV, &pi_dir);
+        f(&pi_dir);
+        match orig {
+            Some(v) => std::env::set_var(PI_CODING_AGENT_DIR_ENV, v),
+            None => std::env::remove_var(PI_CODING_AGENT_DIR_ENV),
         }
     }
 
@@ -5438,7 +5603,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         with_claude_dir_override(&tmp, |claude_dir| {
             run_default_mode(true, PatchMode::Auto, false, InitContext::default()).unwrap();
-            uninstall(true, false, false, false, InitContext::default()).unwrap();
+            uninstall(true, false, false, false, false, InitContext::default()).unwrap();
 
             assert!(!claude_dir.join(RTK_MD).exists(), "RTK.md must be removed");
             let settings_content =
@@ -5488,6 +5653,7 @@ mod tests {
     #[test]
     fn test_local_init_no_hook() {
         let tmp = TempDir::new().unwrap();
+        let _cwd_guard = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let cwd = std::env::current_dir().unwrap();
         std::env::set_current_dir(tmp.path()).unwrap();
 
@@ -5565,7 +5731,7 @@ mod tests {
                 dry_run: true,
                 ..Default::default()
             };
-            uninstall(true, false, false, false, dry).unwrap();
+            uninstall(true, false, false, false, false, dry).unwrap();
 
             // Files must still exist with identical content
             assert!(
@@ -5678,6 +5844,285 @@ mod tests {
             "RTK end marker must be removed"
         );
     }
+
+    #[test]
+    fn test_claude_md_mode_refuses_malformed_block() {
+        // Mirrors `test_copilot_init_refuses_malformed_block`: a malformed
+        // CLAUDE.md previously emitted a warning and exited 0, silently
+        // skipping the OpenCode plugin step. The shared `write_rtk_block`
+        // dispatcher now bails for both paths.
+        let tmp = TempDir::new().unwrap();
+        with_claude_dir_override(&tmp, |claude_dir| {
+            let claude_md = claude_dir.join(CLAUDE_MD);
+            let malformed = format!(
+                "# Existing notes\n\n{}\nincomplete RTK block\n",
+                RTK_BLOCK_START
+            );
+            fs::write(&claude_md, &malformed).unwrap();
+
+            let result = run_claude_md_mode(true, false, InitContext::default());
+
+            assert!(
+                result.is_err(),
+                "Malformed CLAUDE.md must cause a hard error, not silent skip"
+            );
+
+            let after = fs::read_to_string(&claude_md).unwrap();
+            assert_eq!(after, malformed, "File must not be modified when malformed");
+        });
+    }
+
+    // ─── Pi integration tests ───────────────────────────────────────────
+
+    #[test]
+    fn test_run_pi_mode_global_installs_plugin() {
+        let tmp = TempDir::new().unwrap();
+        with_pi_dir_override(&tmp, |pi_dir| {
+            run_pi_mode(true, InitContext::default()).unwrap();
+
+            let plugin = pi_dir.join(PI_EXTENSIONS_SUBDIR).join(PI_PLUGIN_FILE);
+            assert!(plugin.exists(), "global Pi extension must be created");
+
+            let content = fs::read_to_string(&plugin).unwrap();
+            assert!(
+                content.contains("rtk rewrite"),
+                "extension must delegate to rtk rewrite"
+            );
+        });
+    }
+
+    #[test]
+    fn test_run_pi_mode_local_installs_plugin() {
+        let tmp = TempDir::new().unwrap();
+        let _cwd_guard = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let result = run_pi_mode(false, InitContext::default());
+        std::env::set_current_dir(&cwd).unwrap();
+        result.unwrap();
+
+        let plugin = tmp
+            .path()
+            .join(".pi")
+            .join(PI_EXTENSIONS_SUBDIR)
+            .join(PI_PLUGIN_FILE);
+        assert!(plugin.exists(), "local Pi extension must be created");
+    }
+
+    #[test]
+    fn test_run_pi_mode_global_does_not_create_agents_md() {
+        let tmp = TempDir::new().unwrap();
+        with_pi_dir_override(&tmp, |pi_dir| {
+            run_pi_mode(true, InitContext::default()).unwrap();
+
+            let agents_md = pi_dir.join(AGENTS_MD);
+            assert!(!agents_md.exists(), "AGENTS.md must not be created");
+        });
+    }
+
+    #[test]
+    fn test_run_pi_mode_global_creates_plugin_when_dir_absent() {
+        let tmp = TempDir::new().unwrap();
+        let absent_dir = tmp.path().join("no_such_pi_dir");
+        let _guard = PI_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let orig = std::env::var_os(PI_CODING_AGENT_DIR_ENV);
+        std::env::set_var(PI_CODING_AGENT_DIR_ENV, &absent_dir);
+
+        let result = run_pi_mode(true, InitContext::default());
+
+        match orig {
+            Some(v) => std::env::set_var(PI_CODING_AGENT_DIR_ENV, v),
+            None => std::env::remove_var(PI_CODING_AGENT_DIR_ENV),
+        }
+
+        result.unwrap();
+
+        let plugin = absent_dir.join(PI_EXTENSIONS_SUBDIR).join(PI_PLUGIN_FILE);
+        assert!(
+            plugin.exists(),
+            "plugin must be written even when dir was absent"
+        );
+
+        let agents_md = absent_dir.join(AGENTS_MD);
+        assert!(!agents_md.exists(), "AGENTS.md must not be created");
+    }
+
+    #[test]
+    fn test_pi_global_uninstall_removes_plugin() {
+        let tmp = TempDir::new().unwrap();
+        with_pi_dir_override(&tmp, |pi_dir| {
+            run_pi_mode(true, InitContext::default()).unwrap();
+
+            let plugin = pi_dir.join(PI_EXTENSIONS_SUBDIR).join(PI_PLUGIN_FILE);
+            assert!(plugin.exists());
+
+            uninstall(true, false, false, false, true, InitContext::default()).unwrap();
+
+            assert!(!plugin.exists(), "plugin must be removed");
+        });
+    }
+
+    #[test]
+    fn test_pi_local_uninstall_removes_plugin() {
+        let tmp = TempDir::new().unwrap();
+        let _cwd_guard = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        run_pi_mode(false, InitContext::default()).unwrap();
+        let result = uninstall(false, false, false, false, true, InitContext::default());
+        std::env::set_current_dir(&cwd).unwrap();
+        result.unwrap();
+
+        let plugin = tmp
+            .path()
+            .join(".pi")
+            .join(PI_EXTENSIONS_SUBDIR)
+            .join(PI_PLUGIN_FILE);
+        assert!(!plugin.exists(), "local plugin must be removed");
+    }
+
+    #[test]
+    fn test_pi_plugin_path_for_scope_global() {
+        let tmp = TempDir::new().unwrap();
+        with_pi_dir_override(&tmp, |pi_dir| {
+            let path = pi_plugin_path_for_scope(true).unwrap();
+            assert_eq!(path, pi_dir.join(PI_EXTENSIONS_SUBDIR).join(PI_PLUGIN_FILE));
+        });
+    }
+
+    #[test]
+    fn test_pi_plugin_path_for_scope_local() {
+        let path = pi_plugin_path_for_scope(false).unwrap();
+        assert_eq!(
+            path,
+            PathBuf::from(PI_LOCAL_DIR)
+                .join(PI_EXTENSIONS_SUBDIR)
+                .join(PI_PLUGIN_FILE)
+        );
+    }
+
+    #[test]
+    fn test_run_pi_mode_global_dry_run_writes_nothing() {
+        let tmp = TempDir::new().unwrap();
+        with_pi_dir_override(&tmp, |pi_dir| {
+            run_pi_mode(
+                true,
+                InitContext {
+                    verbose: 0,
+                    dry_run: true,
+                },
+            )
+            .unwrap();
+
+            assert!(
+                !pi_dir.join(PI_EXTENSIONS_SUBDIR).exists(),
+                "dry-run must not create the Pi extensions directory"
+            );
+            assert!(
+                !pi_dir
+                    .join(PI_EXTENSIONS_SUBDIR)
+                    .join(PI_PLUGIN_FILE)
+                    .exists(),
+                "dry-run must not create the Pi extension file"
+            );
+        });
+    }
+
+    #[test]
+    fn test_run_pi_mode_local_dry_run_writes_nothing() {
+        let tmp = TempDir::new().unwrap();
+        let _cwd_guard = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let result = run_pi_mode(
+            false,
+            InitContext {
+                verbose: 0,
+                dry_run: true,
+            },
+        );
+        std::env::set_current_dir(&cwd).unwrap();
+        result.unwrap();
+
+        assert!(
+            !tmp.path().join(".pi").join(PI_EXTENSIONS_SUBDIR).exists(),
+            "dry-run must not create .pi/extensions/"
+        );
+    }
+
+    #[test]
+    fn test_pi_global_uninstall_dry_run_keeps_plugin() {
+        let tmp = TempDir::new().unwrap();
+        with_pi_dir_override(&tmp, |pi_dir| {
+            run_pi_mode(true, InitContext::default()).unwrap();
+            let plugin = pi_dir.join(PI_EXTENSIONS_SUBDIR).join(PI_PLUGIN_FILE);
+            assert!(
+                plugin.exists(),
+                "plugin must exist before uninstall dry-run"
+            );
+
+            uninstall(
+                true,
+                false,
+                false,
+                false,
+                true,
+                InitContext {
+                    verbose: 0,
+                    dry_run: true,
+                },
+            )
+            .unwrap();
+
+            assert!(
+                plugin.exists(),
+                "dry-run uninstall must not remove the Pi extension"
+            );
+        });
+    }
+
+    #[test]
+    fn test_pi_local_uninstall_dry_run_keeps_plugin() {
+        let tmp = TempDir::new().unwrap();
+        let _cwd_guard = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        run_pi_mode(false, InitContext::default()).unwrap();
+        let plugin = tmp
+            .path()
+            .join(".pi")
+            .join(PI_EXTENSIONS_SUBDIR)
+            .join(PI_PLUGIN_FILE);
+        assert!(
+            plugin.exists(),
+            "plugin must exist before uninstall dry-run"
+        );
+
+        let result = uninstall(
+            false,
+            false,
+            false,
+            false,
+            true,
+            InitContext {
+                verbose: 0,
+                dry_run: true,
+            },
+        );
+        std::env::set_current_dir(&cwd).unwrap();
+        result.unwrap();
+
+        assert!(
+            plugin.exists(),
+            "dry-run uninstall must not remove the local Pi extension"
+        );
+    }
+
+    // ─── Copilot tests ───────────────────────────────────────────────
 
     #[test]
     fn test_copilot_init_preserves_existing_instructions() {
@@ -5854,32 +6299,5 @@ mod tests {
             "Hook config must not be written when the upsert aborts: {}",
             hook_path.display()
         );
-    }
-
-    #[test]
-    fn test_claude_md_mode_refuses_malformed_block() {
-        // Mirrors `test_copilot_init_refuses_malformed_block`: a malformed
-        // CLAUDE.md previously emitted a warning and exited 0, silently
-        // skipping the OpenCode plugin step. The shared `write_rtk_block`
-        // dispatcher now bails for both paths.
-        let tmp = TempDir::new().unwrap();
-        with_claude_dir_override(&tmp, |claude_dir| {
-            let claude_md = claude_dir.join(CLAUDE_MD);
-            let malformed = format!(
-                "# Existing notes\n\n{}\nincomplete RTK block\n",
-                RTK_BLOCK_START
-            );
-            fs::write(&claude_md, &malformed).unwrap();
-
-            let result = run_claude_md_mode(true, false, InitContext::default());
-
-            assert!(
-                result.is_err(),
-                "Malformed CLAUDE.md must cause a hard error, not silent skip"
-            );
-
-            let after = fs::read_to_string(&claude_md).unwrap();
-            assert_eq!(after, malformed, "File must not be modified when malformed");
-        });
     }
 }
