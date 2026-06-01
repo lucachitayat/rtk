@@ -6,6 +6,33 @@ Newest entries on top.
 
 ---
 
+## 2026-06-01 — Sync upstream/develop @ 6873764 (35 commits)
+
+Merged 35 commits from `upstream/develop` (`5a149a7..6873764`) into `develop` via `sync/upstream-develop-6873764`. **Clean merge — zero conflicts** (confirmed pre-merge by a read-only `git merge-tree` dry run; the MCP-bridge removal of 2026-05-21 eliminated the historical conflict surface). All 33 fork commits preserved; `az_cmd.rs` and the `rtk-upgrade` skill intact.
+
+### Why merge (not defer)
+`/rtk-upgrade` flagged INVESTIGATE — 3 commits touch high-traffic git paths. Two are genuine fixes worth taking:
+- `e1bb17f` fix(gh,glab): stop pre-rejecting `gh pr view` / `pr checks` / `run view` / `glab mr view` when the id is omitted (RTK was blocking valid commands with "number required"). Verified live: `rtk gh pr view` now forwards to `gh`.
+- `49a094a` fix: reset SIGPIPE to `SIG_DFL` — fixes SIGABRT crash on piped output. Verified live: `rtk grep … | head` exits 0, not 134. Relevant to the #1 command `rtk grep`.
+
+### Also landed
+- `83cd93e` chore(args): double-dash restoration extracted to `src/core/args_utils.rs` (−200 lines `git.rs`, −45 `cargo_cmd.rs`) — behavior-preserving refactor, +15 tests.
+- `4128572` fix(gh): fallback note when a PR/issue body filters to empty (+4 tests).
+- Copilot CLI hook support (`init.rs`, `hook_cmd.rs`, `constants.rs`), go build-failure exit status, init symlink fixes, README_pt.
+
+### Cleanup
+- Removed orphaned `hooks/claude/rtk-mcp-rewrite.sh` — its backing `Commands::McpRewrite` was deleted in `8011f9a` (2026-05-21); the script called a nonexistent subcommand. Recovery still available at tag `fork/mcp-bridge-archive-20260521`.
+
+### Version
+Stays `0.41.0-dev-fork.0` (already ahead of upstream `0.40.0`).
+
+### Build gate
+- `cargo fmt --all` ✅
+- `cargo clippy --all-targets` ✅ (0 warnings)
+- `cargo test --all` ✅ (2045 passed, 0 failed, 7 ignored)
+
+---
+
 ## 2026-05-21 — Drop fork-owned MCP bridge (Path A); sync upstream/develop @ a04aa7e
 
 Merged 56 commits from `upstream/develop` (`15a0d2e..a04aa7e`) into `develop` via `merge/upstream-develop-20260521`. Took **Path A** from the upgrade plan: drop the fork-owned MCP code rather than re-wire it across upstream's lint-tightening and `AgentTarget::Hermes` additions.
