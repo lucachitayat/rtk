@@ -31,8 +31,10 @@ fn read_stdin_limited() -> Result<String> {
 enum HookFormat {
     /// VS Code Copilot Chat / Claude Code: `tool_name` + `tool_input.command`, supports `updatedInput`.
     VsCode { command: String },
-    /// GitHub Copilot CLI: camelCase `toolName` + `toolArgs` (JSON string), deny-with-suggestion only.
-    CopilotCli { command: String },
+    /// GitHub Copilot CLI: camelCase `toolName` + `toolArgs` (JSON string), supports `modifiedArgs` for transparent rewrite.
+    /// Carries the full parsed `toolArgs` object so we can rewrite `command` while preserving
+    /// host-supplied metadata (description, initial_wait, mode, …) the tool requires.
+    CopilotCli { command: String, args: Value },
     /// Non-bash tool, already uses rtk, or unknown format — pass through silently.
     PassThrough,
 }
@@ -42,7 +44,9 @@ enum HookFormat {
 pub fn run_copilot() -> Result<()> {
     let input = read_stdin_limited()?;
 
-    let input = input.trim();
+    // Strip leading BOM(s) before trimming: some Windows hosts prepend UTF-8
+    // BOMs to hook stdin (confirmed for Cursor), which serde_json rejects.
+    let input = strip_leading_bom(&input).trim();
     if input.is_empty() {
         return Ok(());
     }
@@ -57,7 +61,7 @@ pub fn run_copilot() -> Result<()> {
 
     match detect_format(&v) {
         HookFormat::VsCode { command } => handle_vscode(&command),
-        HookFormat::CopilotCli { command } => handle_copilot_cli(&command),
+        HookFormat::CopilotCli { command, args } => handle_copilot_cli(&command, &args),
         HookFormat::PassThrough => Ok(()),
     }
 }
@@ -91,6 +95,7 @@ fn detect_format(v: &Value) -> HookFormat {
                     {
                         return HookFormat::CopilotCli {
                             command: cmd.to_string(),
+                            args: tool_args,
                         };
                     }
                 }
@@ -153,28 +158,46 @@ fn handle_vscode(cmd: &str) -> Result<()> {
     Ok(())
 }
 
-fn handle_copilot_cli(cmd: &str) -> Result<()> {
-    if permissions::check_command(cmd) == PermissionVerdict::Deny {
-        audit_log("deny", cmd, "");
-        return Ok(());
+fn handle_copilot_cli(cmd: &str, args: &Value) -> Result<()> {
+    if let Some(response) = copilot_cli_response(cmd, args) {
+        let _ = writeln!(io::stdout(), "{response}");
     }
+    Ok(())
+}
 
-    let rewritten = match get_rewritten(cmd) {
-        Some(r) => r,
-        None => return Ok(()),
-    };
+fn copilot_cli_response(cmd: &str, args: &Value) -> Option<Value> {
+    copilot_cli_response_for_verdict(cmd, args, permissions::check_command(cmd))
+}
 
+fn copilot_cli_response_for_verdict(
+    cmd: &str,
+    args: &Value,
+    verdict: PermissionVerdict,
+) -> Option<Value> {
+    if verdict == PermissionVerdict::Deny {
+        audit_log("deny", cmd, "");
+        return None;
+    }
+    let rewritten = get_rewritten(cmd)?;
     audit_log("rewrite", cmd, &rewritten);
 
-    let output = json!({
-        "permissionDecision": "deny",
-        "permissionDecisionReason": format!(
-            "Token savings: use `{}` instead (rtk saves 60-90% tokens)",
-            rewritten
-        )
+    let mut modified = args.clone();
+    if let Some(obj) = modified.as_object_mut() {
+        obj.insert("command".into(), Value::String(rewritten));
+    }
+
+    // Copilot CLI v1.0.54 only applies `modifiedArgs` when permissionDecision is
+    // either "allow" or absent. Omitting permissionDecision lets Copilot's normal
+    // permission flow run on the rewritten command — `rtk *` is not on its
+    // auto-allow list, so the user sees a prompt for the rewritten command.
+    let mut response = json!({
+        "permissionDecisionReason": "RTK auto-rewrite",
+        "modifiedArgs": modified,
     });
-    let _ = writeln!(io::stdout(), "{output}");
-    Ok(())
+    if verdict == PermissionVerdict::Allow {
+        response["permissionDecision"] = json!("allow");
+    }
+    Some(response)
 }
 
 // ── Gemini hook ───────────────────────────────────────────────
@@ -576,6 +599,25 @@ mod tests {
     }
 
     #[test]
+    fn test_copilot_bom_prefixed_payload_is_recognized() {
+        // Windows hosts may prepend one or two UTF-8 BOMs to hook stdin
+        // (confirmed for Cursor). run_copilot strips them before parsing;
+        // verify both Copilot formats still parse after the same handling.
+        for raw in [
+            format!("\u{feff}{}", copilot_cli_input("git status")),
+            format!("\u{feff}\u{feff}{}", copilot_cli_input("git status")),
+        ] {
+            let cleaned = strip_leading_bom(&raw).trim();
+            let v: Value = serde_json::from_str(cleaned).expect("BOM-stripped JSON must parse");
+            assert!(matches!(detect_format(&v), HookFormat::CopilotCli { .. }));
+        }
+
+        let raw = format!("\u{feff}{}", vscode_input("Bash", "git status"));
+        let v: Value = serde_json::from_str(strip_leading_bom(&raw).trim()).unwrap();
+        assert!(matches!(detect_format(&v), HookFormat::VsCode { .. }));
+    }
+
+    #[test]
     fn test_detect_unknown_is_passthrough() {
         assert!(matches!(detect_format(&json!({})), HookFormat::PassThrough));
     }
@@ -598,6 +640,99 @@ mod tests {
     #[test]
     fn test_get_rewritten_heredoc() {
         assert!(get_rewritten("cat <<'EOF'\nhello\nEOF").is_none());
+    }
+
+    // --- Copilot CLI handler: transparent rewrite via modifiedArgs ---
+
+    fn cli_args(cmd: &str) -> Value {
+        json!({ "command": cmd })
+    }
+
+    #[test]
+    fn test_copilot_cli_default_verdict_omits_permission_decision() {
+        let r = copilot_cli_response_for_verdict(
+            "cargo test",
+            &cli_args("cargo test"),
+            PermissionVerdict::Default,
+        )
+        .unwrap();
+        assert!(
+            r.get("permissionDecision").is_none(),
+            "Default must NOT set permissionDecision — Copilot then runs its normal prompt flow on the rewritten command"
+        );
+        assert_eq!(r["modifiedArgs"]["command"], "rtk cargo test");
+    }
+
+    #[test]
+    fn test_copilot_cli_explicit_allow_returns_allow_with_rewrite() {
+        let r = copilot_cli_response_for_verdict(
+            "cargo test",
+            &cli_args("cargo test"),
+            PermissionVerdict::Allow,
+        )
+        .unwrap();
+        assert_eq!(r["permissionDecision"], "allow");
+        assert_eq!(r["modifiedArgs"]["command"], "rtk cargo test");
+    }
+
+    #[test]
+    fn test_copilot_cli_deny_verdict_returns_none() {
+        assert!(copilot_cli_response_for_verdict(
+            "cargo test",
+            &cli_args("cargo test"),
+            PermissionVerdict::Deny
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn test_copilot_cli_passthrough_unsupported() {
+        assert!(copilot_cli_response("htop", &cli_args("htop")).is_none());
+    }
+
+    #[test]
+    fn test_copilot_cli_passthrough_already_rtk() {
+        assert!(copilot_cli_response("rtk cargo test", &cli_args("rtk cargo test")).is_none());
+    }
+
+    #[test]
+    fn test_copilot_cli_passthrough_heredoc() {
+        let cmd = "cat <<EOF\nhi\nEOF";
+        assert!(copilot_cli_response(cmd, &cli_args(cmd)).is_none());
+    }
+
+    #[test]
+    fn test_copilot_cli_preserves_env_prefix() {
+        let r = copilot_cli_response(
+            "RUST_LOG=debug cargo test",
+            &cli_args("RUST_LOG=debug cargo test"),
+        )
+        .unwrap();
+        assert_eq!(
+            r["modifiedArgs"]["command"],
+            "RUST_LOG=debug rtk cargo test"
+        );
+    }
+
+    #[test]
+    fn test_copilot_cli_preserves_extra_args_fields() {
+        let args = json!({
+            "command": "cargo install ripgrep",
+            "description": "install ripgrep",
+            "initial_wait": 30,
+            "mode": "sync"
+        });
+        let r = copilot_cli_response_for_verdict(
+            "cargo install ripgrep",
+            &args,
+            PermissionVerdict::Default,
+        )
+        .unwrap();
+        let modified = &r["modifiedArgs"];
+        assert_eq!(modified["command"], "rtk cargo install ripgrep");
+        assert_eq!(modified["description"], "install ripgrep");
+        assert_eq!(modified["initial_wait"], 30);
+        assert_eq!(modified["mode"], "sync");
     }
 
     // --- Gemini format ---
