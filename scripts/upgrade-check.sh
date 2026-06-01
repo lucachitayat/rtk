@@ -92,6 +92,25 @@ if [ "$HOT_HITS" = "0" ]; then
 fi
 echo
 
+# Read-only 3-way merge simulation — authoritative answer to "will this conflict?".
+# Needs git >= 2.38. Exit 0 = clean (prints a bare tree OID); exit 1 = conflicts
+# (OID line followed by the conflicted paths under --name-only).
+bold "── Merge preview (read-only dry run) ──"
+CONFLICTS=""
+MERGE_OUT=$(git merge-tree --write-tree --name-only develop upstream/develop 2>/dev/null) && MT_RC=0 || MT_RC=$?
+if [ "$MT_RC" = "0" ]; then
+  green "  ✓ Clean 3-way merge — zero conflicts."
+elif [ "$MT_RC" = "1" ]; then
+  CONFLICTS=$(printf '%s\n' "$MERGE_OUT" | tail -n +2 | sed '/^$/d')
+  CONFLICT_N=$(printf '%s\n' "$CONFLICTS" | grep -c . || true)
+  hot "  ⚠ Merge has conflicts in $CONFLICT_N file(s) — resolve these on merge:"
+  printf '%s\n' "$CONFLICTS" | sed 's/^/      /'
+else
+  dim "  (merge-tree unavailable — needs git >= 2.38; current $(git --version | awk '{print $3}'))"
+  CONFLICTS="?"
+fi
+echo
+
 bold "── Live top-10 commands (from rtk gain) ──"
 if command -v rtk >/dev/null 2>&1; then
   rtk gain --history 2>/dev/null | sed -n '/By Command/,/^Recent/p' | head -20 || dim "(rtk gain failed)"
@@ -100,11 +119,30 @@ else
 fi
 echo
 
+# Emit a ready-to-paste post-merge verification block, tailored to the commits found.
+emit_verification_block() {
+  bold "── Post-merge verification (copy-paste) ──"
+  echo "  cargo fmt --all && cargo clippy --all-targets && cargo test --all"
+  local subjects
+  subjects=$(git log --pretty=format:'%h %s' develop..upstream/develop 2>/dev/null)
+  if printf '%s\n' "$subjects" | grep -qiE 'sigpipe|broken.?pipe'; then
+    echo "  # SIGPIPE fix detected → must NOT exit 134:"
+    echo "      target/release/rtk grep -rn 'fn ' src/ | head -3 >/dev/null; echo \$?"
+  fi
+  if printf '%s\n' "$subjects" | grep -qiE '\bgh\b|\bglab\b'; then
+    echo "  # gh/glab change detected → must NOT print 'number required':"
+    echo "      target/release/rtk gh pr view 2>&1 | head -5"
+  fi
+  echo "  # Or run the full gate + checks in one shot:  bash scripts/post-merge-verify.sh"
+}
+
 bold "── Recommendation ──"
 if [ "$HOT_HITS" = "0" ]; then
   green "DEFER. Upstream has $DEV_BEHIND new commits but none touch high-traffic filter paths."
-  echo "Merging now buys no behavioral value for this user's top commands and risks conflict"
-  echo "with fork-specific code (MCP rewrite/proxy, az filter, FORK_NOTES.md)."
+  echo "Merging now buys no behavioral value for this user's top commands."
+  if [ -n "$CONFLICTS" ] && [ "$CONFLICTS" != "?" ]; then
+    echo "(Merge would also need conflict resolution — see preview above.)"
+  fi
   echo
   echo "Re-run this when:"
   echo "  - rtk init bug bites you (then init --dry-run / Cursor BOM fix may matter)"
@@ -112,8 +150,15 @@ if [ "$HOT_HITS" = "0" ]; then
   echo "  - rolling cadence: monthly checkpoint"
 else
   hot "INVESTIGATE. Upstream touches $HOT_HITS commit(s) in high-traffic filter paths."
+  if [ -z "$CONFLICTS" ]; then
+    green "  Merge is conflict-free (see preview) — low cost to take."
+  elif [ "$CONFLICTS" != "?" ]; then
+    hot "  Merge also has conflicts to resolve (see preview) — factor into cost."
+  fi
   echo "For each commit listed above:"
   echo "  git show <sha> -- <path>"
   echo "Judge: clippy/whitespace = ignore, regex/format/truncation = real impact."
   echo "If real impact: merge. If clippy-only: defer (verify by snapshot diff)."
+  echo
+  emit_verification_block
 fi

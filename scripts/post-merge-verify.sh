@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# post-merge-verify.sh — Standardized checks to run AFTER syncing upstream into the fork.
+#
+# Companion to upgrade-check.sh. Run on the merged branch (develop or a sync branch)
+# once `git merge upstream/develop` is done. Verifies the merge didn't break the build
+# or silently regress the behavior changes upstream introduced.
+#
+# Workflow:
+#   1. Quality gate    — cargo fmt --check, clippy --all-targets, test --all
+#   2. Release build   — needed for behavior spot-checks
+#   3. Behavior checks — SIGPIPE (no SIGABRT on broken pipe), gh no-id forwarding
+#   4. Divergence      — confirm fully merged (behind upstream = 0), fork commits retained
+#   5. Version sanity  — fork Cargo.toml version base >= upstream
+#
+# Usage:  bash scripts/post-merge-verify.sh
+# Exit:   0 if all gates pass, 1 otherwise. Each check reports independently.
+
+set -uo pipefail   # NOT -e: run every check and report, don't bail on first failure
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
+
+bold()  { printf "\033[1m%s\033[0m\n" "$*"; }
+dim()   { printf "\033[2m%s\033[0m\n" "$*"; }
+pass()  { printf "\033[32m  ✓ %s\033[0m\n" "$*"; }
+fail()  { printf "\033[31m  ✗ %s\033[0m\n" "$*"; }
+warn()  { printf "\033[33m  ⚠ %s\033[0m\n" "$*"; }
+
+RC=0
+
+bold "=== RTK post-merge verify ==="
+echo "branch: $(git rev-parse --abbrev-ref HEAD)   head: $(git log -1 --oneline HEAD)"
+echo
+
+# ── 1. Quality gate ───────────────────────────────────────────────────────────
+bold "── Quality gate ──"
+if cargo fmt --all -- --check >/dev/null 2>&1; then pass "cargo fmt --all --check"; else fail "cargo fmt — run 'cargo fmt --all'"; RC=1; fi
+if cargo clippy --all-targets >/tmp/pmv_clippy.txt 2>&1; then pass "cargo clippy --all-targets"; else fail "cargo clippy (see /tmp/pmv_clippy.txt)"; RC=1; fi
+if cargo test --all >/tmp/pmv_test.txt 2>&1; then
+  pass "cargo test --all ($(grep -hoE '[0-9]+ passed' /tmp/pmv_test.txt | head -1))"
+else
+  fail "cargo test (see /tmp/pmv_test.txt)"; RC=1
+fi
+echo
+
+# ── 2. Release build (needed for behavior checks) ───────────────────────────────
+bold "── Release build ──"
+if cargo build --release >/tmp/pmv_build.txt 2>&1; then pass "cargo build --release"; else fail "release build (see /tmp/pmv_build.txt)"; RC=1; fi
+BIN="target/release/rtk"
+echo
+
+# ── 3. Behavior spot-checks ─────────────────────────────────────────────────────
+bold "── Behavior spot-checks ──"
+if [ -x "$BIN" ]; then
+  # SIGPIPE: writing to a closed pipe must not SIGABRT (exit 134).
+  "$BIN" grep -rn "fn " src/ 2>/dev/null | head -3 >/dev/null
+  ec=$?
+  if [ "$ec" = "134" ]; then fail "SIGPIPE: rtk grep | head crashed with SIGABRT (134)"; RC=1
+  else pass "SIGPIPE: rtk grep | head exits $ec (no SIGABRT)"; fi
+
+  # gh no-id: rtk must forward to gh, not pre-reject with "number required".
+  if "$BIN" gh pr view 2>&1 | head -5 | grep -qi "number required"; then
+    fail "gh no-id: rtk still pre-rejects 'gh pr view' with 'number required'"; RC=1
+  else
+    pass "gh no-id: rtk forwards 'gh pr view' (no pre-rejection)"
+  fi
+else
+  warn "release binary missing — skipping behavior checks"
+fi
+echo
+
+# ── 4. Divergence ───────────────────────────────────────────────────────────────
+bold "── Divergence vs upstream/develop ──"
+if git rev-parse --verify upstream/develop >/dev/null 2>&1; then
+  BEHIND=$(git rev-list --count HEAD..upstream/develop 2>/dev/null || echo "?")
+  AHEAD=$(git rev-list --count upstream/develop..HEAD 2>/dev/null || echo "?")
+  if [ "$BEHIND" = "0" ]; then pass "fully merged — 0 commits behind upstream/develop"; else warn "still $BEHIND behind upstream/develop"; fi
+  pass "$AHEAD fork commits ahead of upstream/develop"
+else
+  warn "upstream/develop not fetched — run upgrade-check.sh first"
+fi
+echo
+
+# ── 5. Version sanity ─────────────────────────────────────────────────────────
+bold "── Version sanity ──"
+fork_ver=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')
+up_ver=$(git show upstream/develop:Cargo.toml 2>/dev/null | grep -m1 '^version' | sed -E 's/.*"(.*)".*/\1/')
+if [ -n "$up_ver" ]; then
+  fork_base=${fork_ver%%-*}; up_base=${up_ver%%-*}
+  lowest=$(printf '%s\n%s\n' "$fork_base" "$up_base" | sort -V | head -1)
+  if [ "$fork_base" != "$up_base" ] && [ "$lowest" = "$fork_base" ]; then
+    warn "fork version ($fork_ver) base is BELOW upstream ($up_ver) — bump fork version"
+  else
+    pass "fork version $fork_ver >= upstream $up_ver (base)"
+  fi
+else
+  dim "  (could not read upstream Cargo.toml version)"
+fi
+echo
+
+if [ "$RC" = "0" ]; then bold "✓ All gates passed."; else bold "✗ Some gates failed — see above."; fi
+exit $RC

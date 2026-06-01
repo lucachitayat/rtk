@@ -16,16 +16,22 @@ Run before recommending any merge of `upstream/develop` (or `upstream/master`) i
 ## How to Run
 
 ```bash
-bash scripts/upgrade-check.sh
+bash scripts/upgrade-check.sh        # decide: defer or merge
+# ...if you merge:
+bash scripts/post-merge-verify.sh    # gate + behavior checks on the merged branch
 ```
 
-The script does:
-1. `git fetch upstream --tags`
+`upgrade-check.sh` does:
+1. `git fetch upstream develop master` (branches only — tags skipped to avoid local-tag conflicts like `latest`)
 2. Counts divergence (develop vs upstream/develop and upstream/master)
 3. Lists new upstream commits and the files they touch
 4. **Cross-references against high-traffic filter paths** (see below) — the only thing that matters
 5. Pulls `rtk gain --history` so the impact ranking reflects current usage, not stale assumptions
 6. Prints DEFER or INVESTIGATE recommendation
+7. **Merge preview** — `git merge-tree` read-only dry run proves whether the merge is conflict-free *before* you commit to it (no agent fan-out needed to guess at conflicts)
+8. On INVESTIGATE, emits a copy-paste **post-merge verification block** tailored to the commits found
+
+`post-merge-verify.sh` (run after merging) does: quality gate (fmt/clippy/test) → release build → behavior spot-checks (SIGPIPE no-crash, gh no-id forwarding) → divergence + fork-version sanity. Exit 0 = all gates pass.
 
 ## High-Traffic Filter Paths (the decision pivot)
 
@@ -51,13 +57,11 @@ If you update this list, also update `memory/rtk_upgrade_check.md` and `HOT_PATH
 
 ## Fork Features to Preserve on Merge
 
-These are the conflict-risk areas. Any merge plan must account for them:
+Don't maintain a manual conflict list — the merge preview (script step 7) is authoritative. The one fork-only value-add to eyeball post-merge is `src/cmds/cloud/az_cmd.rs` (Azure CLI filter); `FORK_NOTES.md` and `.claude/skills/rtk-upgrade/` are fork-only and never conflict.
 
-- `src/mcp/**` + `src/hooks/mcp_rewrite_cmd.rs` — MCP rewrite/proxy (fork's main feature)
-- `src/cmds/cloud/az_cmd.rs` — Azure CLI filter (large file, has been merged upstream partially in past iterations)
-- `FORK_NOTES.md` — fork-specific running log
+> **Note:** the MCP rewrite/proxy bridge (`src/mcp/**`, `src/hooks/mcp_rewrite_cmd.rs`) was **removed** on 2026-05-21 (archived at tag `fork/mcp-bridge-archive-20260521`) — not a preserve-target.
 
-Check `git log upstream/develop..develop -- <path>` before merging to see what fork commits would conflict.
+For ad-hoc questions: `git merge-tree --write-tree develop upstream/develop` (exit 0 = zero conflicts) and `git log upstream/develop..develop -- <path>` (which fork commits touch a path).
 
 ## Output Format
 
