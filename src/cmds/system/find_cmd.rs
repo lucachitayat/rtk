@@ -630,4 +630,117 @@ mod tests {
         // We can't easily capture stdout in unit tests, but at least
         // verify it runs without error. The smoke tests verify content.
     }
+
+    // --- characterization tests for collect_matches ---
+    // These pin the exact result SET (not just is_ok), so the parallel walk
+    // must reproduce identical output. cwd during `cargo test` is the crate root.
+
+    #[test]
+    fn collect_matches_finds_known_source_file() {
+        let files = collect_matches("src", "*.rs", false, false, None);
+        assert!(!files.is_empty());
+        assert!(
+            files.contains(&"cmds/system/find_cmd.rs".to_string()),
+            "expected to find this very file; got {} entries",
+            files.len()
+        );
+    }
+
+    #[test]
+    fn collect_matches_is_sorted_and_deduped() {
+        let files = collect_matches("src", "*", false, false, None);
+        let mut expected = files.clone();
+        expected.sort();
+        assert_eq!(files, expected, "result must be sorted");
+        let mut deduped = files.clone();
+        deduped.dedup();
+        assert_eq!(files, deduped, "result must have no duplicate paths");
+    }
+
+    #[test]
+    fn collect_matches_respects_gitignore() {
+        // target/ is gitignored — nothing under it should appear.
+        let files = collect_matches(".", "*", false, false, None);
+        assert!(
+            files.iter().all(|f| !f.starts_with("target/")),
+            "gitignored target/ leaked into results"
+        );
+    }
+
+    #[test]
+    fn collect_matches_dotfile_pattern_includes_hidden() {
+        // Pattern starts with '.', so hidden entries are walked (#1101).
+        let files = collect_matches(".", ".gitignore", false, false, Some(1));
+        assert!(files.contains(&".gitignore".to_string()));
+    }
+
+    #[test]
+    fn collect_matches_regular_pattern_skips_hidden() {
+        // Non-dot pattern: hidden top-level entries (.gitignore, .github) are skipped.
+        let files = collect_matches(".", "*", false, false, Some(1));
+        assert!(
+            files.iter().all(|f| !f.starts_with('.')),
+            "hidden entries leaked for a non-dot pattern"
+        );
+    }
+
+    #[test]
+    fn collect_matches_type_dir_returns_dirs_not_files() {
+        let dirs = collect_matches("src", "*", true, false, None);
+        assert!(dirs.contains(&"cmds".to_string()), "expected dir 'cmds'");
+        assert!(
+            !dirs.contains(&"main.rs".to_string()),
+            "file 'main.rs' must not appear when want_dirs"
+        );
+    }
+
+    #[test]
+    fn collect_matches_type_file_excludes_dirs() {
+        let files = collect_matches("src", "*", false, false, None);
+        assert!(
+            files.contains(&"main.rs".to_string()),
+            "expected file 'main.rs'"
+        );
+        assert!(
+            !files.contains(&"cmds".to_string()),
+            "dir 'cmds' must not appear when want_dirs is false"
+        );
+    }
+
+    #[test]
+    fn collect_matches_iname_is_case_insensitive() {
+        let ci = collect_matches(".", "cargo.toml", false, true, Some(1));
+        assert!(
+            ci.contains(&"Cargo.toml".to_string()),
+            "case-insensitive should match Cargo.toml"
+        );
+        let cs = collect_matches(".", "cargo.toml", false, false, Some(1));
+        assert!(
+            !cs.contains(&"Cargo.toml".to_string()),
+            "case-sensitive should NOT match Cargo.toml"
+        );
+    }
+
+    #[test]
+    fn collect_matches_maxdepth_bounds_descent() {
+        // depth 1 in src => only entries directly in src/, no nested paths.
+        let shallow = collect_matches("src", "*.rs", false, false, Some(1));
+        assert!(!shallow.is_empty(), "expected at least one top-level .rs in src");
+        assert!(
+            shallow.iter().all(|f| !f.contains('/')),
+            "maxdepth=1 returned nested paths"
+        );
+        // Without the bound, nested files appear.
+        let deep = collect_matches("src", "*.rs", false, false, None);
+        assert!(
+            deep.iter().any(|f| f.contains('/')),
+            "expected nested paths without maxdepth"
+        );
+    }
+
+    #[test]
+    fn collect_matches_no_matches_is_empty() {
+        let files = collect_matches("src", "*.xyz_nonexistent", false, false, None);
+        assert!(files.is_empty());
+    }
 }
