@@ -190,28 +190,17 @@ pub fn run_from_args(args: &[String], verbose: u8) -> Result<()> {
     )
 }
 
-pub fn run(
-    pattern: &str,
+/// Walk `path` and return the sorted, relative paths whose file name matches
+/// `effective_pattern`, filtered by file/dir type. Honors .gitignore and skips
+/// hidden entries unless the pattern targets dotfiles (#1101). The returned
+/// list is sorted so callers get order-stable output regardless of walk order.
+fn collect_matches(
     path: &str,
-    max_results: usize,
-    max_depth: Option<usize>,
-    file_type: &str,
+    effective_pattern: &str,
+    want_dirs: bool,
     case_insensitive: bool,
-    verbose: u8,
-) -> Result<()> {
-    let timer = tracking::TimedExecution::start();
-
-    // Treat "." as match-all
-    let effective_pattern = if pattern == "." { "*" } else { pattern };
-
-    if verbose > 0 {
-        eprintln!("find: {} in {}", effective_pattern, path);
-    }
-
-    let want_dirs = file_type == "d";
-
-    // When the pattern targets dotfiles (e.g. -name ".claude.json"), we must walk hidden
-    // entries; otherwise skip them to keep results tidy (#1101).
+    max_depth: Option<usize>,
+) -> Vec<String> {
     let search_hidden = effective_pattern.starts_with('.');
 
     let mut builder = WalkBuilder::new(path);
@@ -274,6 +263,30 @@ pub fn run(
     }
 
     files.sort();
+    files
+}
+
+pub fn run(
+    pattern: &str,
+    path: &str,
+    max_results: usize,
+    max_depth: Option<usize>,
+    file_type: &str,
+    case_insensitive: bool,
+    verbose: u8,
+) -> Result<()> {
+    let timer = tracking::TimedExecution::start();
+
+    // Treat "." as match-all
+    let effective_pattern = if pattern == "." { "*" } else { pattern };
+
+    if verbose > 0 {
+        eprintln!("find: {} in {}", effective_pattern, path);
+    }
+
+    let want_dirs = file_type == "d";
+
+    let files = collect_matches(path, effective_pattern, want_dirs, case_insensitive, max_depth);
 
     let raw_output = files.join("\n");
 
