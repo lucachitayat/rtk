@@ -6,6 +6,39 @@ Newest entries on top.
 
 ---
 
+## 2026-06-02 — perf(find): parallel walk (fork-local feature)
+
+`rtk find` walked the filesystem on a single thread (`ignore::WalkBuilder::build()`) while the engine it uses (`ignore` crate) is the same one `fd`/`ripgrep` parallelize. Switched `collect_matches` to `build_parallel()` with a per-thread `mpsc` sender; matches are merged then sorted, so output is **byte-identical** to the serial walk.
+
+### Why
+On a 16k-file tree `rtk find . -name '*.cs'` measured **270 ms** serial; native `find` ~1.1 s. The serial walk left ~2× on the table vs `fd`. Every `find` an agent issues is hook-rewritten to `rtk find`, so this is on the hot path of daily use.
+
+### Result (measured, warm, `hyperfine -N`)
+- `rtk find`: **270 ms → 135 ms** (≈2×); now ~1.15× faster than `fd` (156 ms) **and** keeps the compact dir-grouped output.
+- Output parity: `diff` of old-serial vs new-parallel `rtk find` on the real tree = **byte-identical**.
+
+### TDD (red-green, behavior-preserving)
+1. `f5ec92a` refactor — extract pure `collect_matches` (serial), suite stays green.
+2. `18c7f06` test — 10 characterization tests pinning the exact result set (sort/dedup, gitignore, hidden-vs-dotfile, type filter, `-iname`, `-maxdepth`, empty).
+3. `54fb9e3` perf — `build_parallel()`; the same tests pass unchanged.
+4. `031a27e` chore — version bump.
+
+### Gate
+- `cargo fmt --all --check` ✅ · `cargo clippy --all-targets` ✅ (exit 0) · `cargo test` ✅ **2055 passed, 0 failed, 7 ignored**.
+- `scripts/test-all.sh`: 94 passed, 12 failed, 10 skipped — the **12 failures are identical on the pre-change binary** (pre-existing: untrusted `.rtk/filters.toml`, pnpm/ccusage/curl env, rewrite-config tests). `── Find ──` assertions PASS on both. Zero new failures.
+
+### Version
+`0.41.0-dev-fork.0` → `0.41.0-dev-fork.1`. No new dependency (`ignore` already vendored).
+
+### Rollback anchors
+- Tag: **`fork/develop-pre-parallel-find-20260602`** → `ad393ed` (pre-change `develop` tip). Revert develop: `git reset --hard fork/develop-pre-parallel-find-20260602`.
+- Binary backup: `~/.cargo/bin/rtk.bak-ad393ed` (the live serial build). Instant restore: `cp ~/.cargo/bin/rtk.bak-ad393ed ~/.cargo/bin/rtk` (takes effect next Bash call).
+
+### Upstream
+Clean, general improvement (not fork-specific) — candidate for an upstream PR to `rtk-ai/rtk` later. Not filed yet.
+
+---
+
 ## 2026-06-01 — Sync upstream/develop @ 6873764 (35 commits)
 
 Merged 35 commits from `upstream/develop` (`5a149a7..6873764`) into `develop` via `sync/upstream-develop-6873764`. **Clean merge — zero conflicts** (confirmed pre-merge by a read-only `git merge-tree` dry run; the MCP-bridge removal of 2026-05-21 eliminated the historical conflict surface). All 33 fork commits preserved; `az_cmd.rs` and the `rtk-upgrade` skill intact.
