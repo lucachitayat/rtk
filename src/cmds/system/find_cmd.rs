@@ -2,9 +2,10 @@
 
 use crate::core::tracking;
 use anyhow::{Context, Result};
-use ignore::WalkBuilder;
+use ignore::{WalkBuilder, WalkState};
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::mpsc;
 
 /// Match a filename against a glob pattern (supports `*` and `?`).
 fn glob_match(pattern: &str, name: &str) -> bool {
@@ -212,56 +213,70 @@ fn collect_matches(
     if let Some(depth) = max_depth {
         builder.max_depth(Some(depth));
     }
-    let walker = builder.build();
+    // Parallel walk (the same engine fd/ripgrep use). Each worker thread owns a
+    // cloned sender and cloned read-only inputs, so the visitor is `Send`. Results
+    // are merged then sorted, so output is order-stable and byte-identical to the
+    // serial walk regardless of thread scheduling.
+    let pattern_owned = effective_pattern.to_string();
+    let path_owned = path.to_string();
+    let (tx, rx) = mpsc::channel::<String>();
 
-    let mut files: Vec<String> = Vec::new();
+    builder.build_parallel().run(move || {
+        let tx = tx.clone();
+        let pattern = pattern_owned.clone();
+        let path = path_owned.clone();
+        Box::new(move |result| {
+            let entry = match result {
+                Ok(e) => e,
+                Err(_) => return WalkState::Continue,
+            };
 
-    for entry in walker {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
+            let ft = entry.file_type();
+            let is_dir = ft.as_ref().is_some_and(|t| t.is_dir());
 
-        let ft = entry.file_type();
-        let is_dir = ft.as_ref().is_some_and(|t| t.is_dir());
+            // Filter by type
+            if want_dirs && !is_dir {
+                return WalkState::Continue;
+            }
+            if !want_dirs && is_dir {
+                return WalkState::Continue;
+            }
 
-        // Filter by type
-        if want_dirs && !is_dir {
-            continue;
-        }
-        if !want_dirs && is_dir {
-            continue;
-        }
+            let entry_path = entry.path();
 
-        let entry_path = entry.path();
+            // Get filename for glob matching
+            let name = match entry_path.file_name() {
+                Some(n) => n.to_string_lossy(),
+                None => return WalkState::Continue,
+            };
 
-        // Get filename for glob matching
-        let name = match entry_path.file_name() {
-            Some(n) => n.to_string_lossy(),
-            None => continue,
-        };
+            let matches = if case_insensitive {
+                glob_match(&pattern.to_lowercase(), &name.to_lowercase())
+            } else {
+                glob_match(&pattern, &name)
+            };
+            if !matches {
+                return WalkState::Continue;
+            }
 
-        let matches = if case_insensitive {
-            glob_match(&effective_pattern.to_lowercase(), &name.to_lowercase())
-        } else {
-            glob_match(effective_pattern, &name)
-        };
-        if !matches {
-            continue;
-        }
+            // Store path relative to search root
+            let display_path = entry_path
+                .strip_prefix(&path)
+                .unwrap_or(entry_path)
+                .to_string_lossy()
+                .to_string();
 
-        // Store path relative to search root
-        let display_path = entry_path
-            .strip_prefix(path)
-            .unwrap_or(entry_path)
-            .to_string_lossy()
-            .to_string();
+            if !display_path.is_empty() {
+                let _ = tx.send(display_path);
+            }
 
-        if !display_path.is_empty() {
-            files.push(display_path);
-        }
-    }
+            WalkState::Continue
+        })
+    });
 
+    // All senders are dropped once `run` returns (it joins the worker threads
+    // and drops the factory), so this iterator terminates.
+    let mut files: Vec<String> = rx.into_iter().collect();
     files.sort();
     files
 }
