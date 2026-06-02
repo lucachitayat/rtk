@@ -921,7 +921,7 @@ dependencies = [
 
 [[package]]
 name = "rtk"
-version = "0.41.0-dev-fork.0"
+version = "0.41.0-dev-fork.1"
 dependencies = [
  "anyhow",
  "automod",
