@@ -6,6 +6,38 @@ Newest entries on top.
 
 ---
 
+## 2026-06-03 — Sync upstream/develop @ 4f4a6a0 (7 commits)
+
+Merged 7 commits from `upstream/develop` into `develop` (merge commit `9f062ab`, `--no-ff`). **Clean 3-way merge — zero conflicts** (confirmed pre-merge by `git merge-tree`). Only 3 files changed (`Cargo.toml`, `src/cmds/git/git.rs`, `src/core/args_utils.rs`); all 41 prior fork commits preserved, `az_cmd.rs` and the `rtk-upgrade` skill intact.
+
+### Why merge (not defer)
+`/rtk-upgrade` flagged INVESTIGATE — two genuine correctness fixes on the top-2 token-volume commands:
+- `89ae19b` fix(grep): rewrites `--` restoration in `args_utils.rs` from value-based matching (`parsed.contains(...)`, which **duplicated tokens** when a positional/filename equalled a command token, e.g. `rtk grep diff -- diff`, `rtk git diff -- diff`) to deterministic **position-based** math (`user_region_len = parsed.len() + missing_dashes`). Affects **`rtk grep` (#1, 78.8M tokens saved historically)** and `rtk git diff`. Brought in via merge `57e9350` (KuSh double-dash fix).
+- `c5ec92f` + `ab4fa7b` fix(git): prevent a **UTF-8 byte-slice panic** (`&hash[..7]`) on multibyte branch names in `git commit` output, and correct hash extraction (old code grabbed the branch name, not the hash — now finds the `]` and takes the last whitespace token). Uses `chars().take(7)`. Touches the git/ hot path.
+
+### Also landed
+- `6f4519a` / `4c278d1` chore: declare MSRV `rust-version = "1.91"` in `Cargo.toml`. Merged in cleanly (added line; fork version/description/license preserved). Local toolchain is 1.94.1 — satisfied.
+
+### Not impacting
+- The 265-line `find_cmd.rs` delta seen in the symmetric diffstat is **the fork's own** parallel-walk work, not new upstream — `rtk find` (#2) untouched by this sync.
+
+### Behavior note
+The `args_utils.rs` rewrite drops special handling of multi-segment compound commands with `--` (`cmd1 -- a && cmd2 -- file`); those aren't a single `rtk` invocation in practice, so it's a non-issue. The removed `test_compound_command_with_dashes` reflected that.
+
+### Version
+`0.41.0-dev-fork.1` → `0.41.0-dev-fork.2`. Also fixed pre-existing drift: `.release-please-manifest.json` was lagging at `0.41.0-dev-fork.0`, now synced to `0.41.0-dev-fork.2`.
+
+### Build gate (`scripts/post-merge-verify.sh` — all green)
+- `cargo fmt --all --check` ✅ · `cargo clippy --all-targets` ✅ · `cargo test --all` ✅ **2064 passed** (+9 vs pre-merge 2055 — the new upstream multibyte/arg regression tests).
+- `cargo build --release` ✅ · SIGPIPE `rtk grep | head` exits 141 (no SIGABRT) ✅ · `gh pr view` no-id forwarding ✅.
+- Installed locally: `cargo install --path . --force` → live `~/.cargo/bin/rtk` now `0.41.0-dev-fork.2`.
+
+### Rollback anchors
+- Tag: **`fork/develop-pre-merge-20260603`** → `da4339d` (pre-merge `develop` tip). Revert develop: `git reset --hard fork/develop-pre-merge-20260603`.
+- Binary backup: `~/.cargo/bin/rtk.bak-da4339d` (the live `0.41.0-dev-fork.1` build). Instant restore: `cp ~/.cargo/bin/rtk.bak-da4339d ~/.cargo/bin/rtk`.
+
+---
+
 ## 2026-06-02 — perf(find): parallel walk (fork-local feature)
 
 `rtk find` walked the filesystem on a single thread (`ignore::WalkBuilder::build()`) while the engine it uses (`ignore` crate) is the same one `fd`/`ripgrep` parallelize. Switched `collect_matches` to `build_parallel()` with a per-thread `mpsc` sender; matches are merged then sorted, so output is **byte-identical** to the serial walk.
