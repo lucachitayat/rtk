@@ -18,10 +18,12 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 # High-traffic paths — touching these changes output the user actually sees.
-# Keep in sync with memory/rtk_upgrade_check.md.
+# DRIFT GUARD: update this list (and the FORK_INVARIANTS in post-merge-verify.sh)
+# whenever you add or remove a high-traffic fork filter.
 HOT_PATHS=(
   "src/cmds/system/grep"
   "src/cmds/system/read"
+  "src/cmds/system/find"
   "src/cmds/git/"
   "src/cmds/dotnet/"
   "src/cmds/cloud/"
@@ -29,6 +31,21 @@ HOT_PATHS=(
   "src/core/utils.rs"
   "filters/"
 )
+
+# Classify one commit's impact on a hot path: behavioral (bias: investigate) vs
+# confidently inert (clippy/whitespace). A HINT that AUGMENTS — never replaces —
+# inspection; the recommendation always prints the `git show` escape hatch.
+classify_commit() {
+  local sha="$1" path="$2" code
+  code=$(git show --format= "$sha" -- "$path" 2>/dev/null | grep -E '^[+-]' | grep -vE '^(\+\+\+|---)' || true)
+  if [ -z "$code" ]; then
+    echo "[whitespace?]"
+  elif printf '%s\n' "$code" | grep -qE 'Regex::new|format!|write!|writeln!|truncate|\.take\(|\.skip\(|=>|[<>]=|push_str|MAX|LIMIT|const |struct |fn |return ' ; then
+    echo "[behavioral?]"
+  else
+    echo "[clippy-only?]"
+  fi
+}
 
 bold()   { printf "\033[1m%s\033[0m\n" "$*"; }
 dim()    { printf "\033[2m%s\033[0m\n" "$*"; }
@@ -54,13 +71,19 @@ bold "── Divergence ──"
 DEV_BEHIND=$(git rev-list --count develop..upstream/develop 2>/dev/null || echo "?")
 DEV_AHEAD=$(git rev-list --count upstream/develop..develop 2>/dev/null || echo "?")
 MASTER_BEHIND=$(git rev-list --count develop..upstream/master 2>/dev/null || echo "?")
-echo "develop behind upstream/develop: $DEV_BEHIND commits"
+echo "develop behind upstream/develop: $DEV_BEHIND commits  (develop is the merge source)"
 echo "develop ahead  of upstream/develop: $DEV_AHEAD commits"
-echo "develop behind upstream/master:  $MASTER_BEHIND commits"
+dim "develop behind upstream/master:  $MASTER_BEHIND commits  (informational — fork syncs from develop)"
 echo
 
-if [ "$DEV_BEHIND" = "0" ] && [ "$MASTER_BEHIND" = "0" ]; then
-  green "✓ Fork is current. No upstream commits to merge."
+# The fork syncs from upstream/develop; master-ahead is informational only, never a merge source.
+if [ "$DEV_BEHIND" = "0" ]; then
+  green "✓ Fork is current vs upstream/develop (the merge source)."
+  if [ "$MASTER_BEHIND" != "0" ] && [ "$MASTER_BEHIND" != "?" ]; then
+    dim "  ($MASTER_BEHIND commits ahead on upstream/master — not a sync source; ignore unless retargeting.)"
+  fi
+  echo
+  echo "RECOMMENDATION: CURRENT"
   exit 0
 fi
 
@@ -80,11 +103,16 @@ echo
 bold "── Commits touching HIGH-TRAFFIC filter paths ──"
 HOT_HITS=0
 for path in "${HOT_PATHS[@]}"; do
-  HITS=$(git log --oneline develop..upstream/develop -- "$path" 2>/dev/null)
+  HITS=$(git log --oneline develop..upstream/develop -- "$path" 2>/dev/null || true)
   if [ -n "$HITS" ]; then
     hot "  $path"
-    echo "$HITS" | sed 's/^/    /'
-    HOT_HITS=$((HOT_HITS + $(echo "$HITS" | wc -l)))
+    while IFS= read -r line; do
+      [ -z "$line" ] && continue
+      sha="${line%% *}"
+      tag=$(classify_commit "$sha" "$path")
+      echo "    $line  $tag"
+      HOT_HITS=$((HOT_HITS + 1))
+    done <<< "$HITS"
   fi
 done
 if [ "$HOT_HITS" = "0" ]; then
@@ -155,10 +183,18 @@ else
   elif [ "$CONFLICTS" != "?" ]; then
     hot "  Merge also has conflicts to resolve (see preview) — factor into cost."
   fi
-  echo "For each commit listed above:"
+  echo "Tags above are HINTS (bias: investigate). To confirm any commit:"
   echo "  git show <sha> -- <path>"
   echo "Judge: clippy/whitespace = ignore, regex/format/truncation = real impact."
   echo "If real impact: merge. If clippy-only: defer (verify by snapshot diff)."
   echo
   emit_verification_block
+fi
+
+# Machine-stable trailer — the dispatcher (rtk-upgrade.sh) parses this last line.
+echo
+if [ "$HOT_HITS" = "0" ]; then
+  echo "RECOMMENDATION: DEFER"
+else
+  echo "RECOMMENDATION: INVESTIGATE"
 fi

@@ -26,6 +26,15 @@ pass()  { printf "\033[32m  ✓ %s\033[0m\n" "$*"; }
 fail()  { printf "\033[31m  ✗ %s\033[0m\n" "$*"; }
 warn()  { printf "\033[33m  ⚠ %s\033[0m\n" "$*"; }
 
+# First ~15 error-ish lines of a build/test log → inline digest. The FULL log stays
+# in /tmp (out of context); render only enough to diagnose without paginating.
+digest() { grep -nE 'error\[|error:|^error|warning:|^test .* FAILED|--> ' "$1" 2>/dev/null | head -15 | sed 's/^/      /' || true; }
+
+# Fork-invariant helpers (quiet — never dump matched lines into output).
+inv_exists() { if [ -e "$1" ]; then pass "$2"; else fail "$2 (missing: $1)"; RC=1; fi; }
+inv_absent() { if [ -e "$1" ]; then fail "$2 (should be absent: $1)"; RC=1; else pass "$2"; fi; }
+inv_grep()   { if grep -rlqF -- "$1" "$2" 2>/dev/null; then pass "$3"; else fail "$3 (pattern gone from $2)"; RC=1; fi; }
+
 RC=0
 
 bold "=== RTK post-merge verify ==="
@@ -35,18 +44,38 @@ echo
 # ── 1. Quality gate ───────────────────────────────────────────────────────────
 bold "── Quality gate ──"
 if cargo fmt --all -- --check >/dev/null 2>&1; then pass "cargo fmt --all --check"; else fail "cargo fmt — run 'cargo fmt --all'"; RC=1; fi
-if cargo clippy --all-targets >/tmp/pmv_clippy.txt 2>&1; then pass "cargo clippy --all-targets"; else fail "cargo clippy (see /tmp/pmv_clippy.txt)"; RC=1; fi
+if cargo clippy --all-targets >/tmp/pmv_clippy.txt 2>&1; then pass "cargo clippy --all-targets"; else fail "cargo clippy (digest below; full: /tmp/pmv_clippy.txt)"; digest /tmp/pmv_clippy.txt; RC=1; fi
 if cargo test --all >/tmp/pmv_test.txt 2>&1; then
   pass "cargo test --all ($(grep -hoE '[0-9]+ passed' /tmp/pmv_test.txt | head -1))"
 else
-  fail "cargo test (see /tmp/pmv_test.txt)"; RC=1
+  fail "cargo test (digest below; full: /tmp/pmv_test.txt)"; digest /tmp/pmv_test.txt; RC=1
 fi
 echo
 
 # ── 2. Release build (needed for behavior checks) ───────────────────────────────
 bold "── Release build ──"
-if cargo build --release >/tmp/pmv_build.txt 2>&1; then pass "cargo build --release"; else fail "release build (see /tmp/pmv_build.txt)"; RC=1; fi
+if cargo build --release >/tmp/pmv_build.txt 2>&1; then pass "cargo build --release"; else fail "release build (digest below; full: /tmp/pmv_build.txt)"; digest /tmp/pmv_build.txt; RC=1; fi
 BIN="target/release/rtk"
+echo
+
+# ── Fork invariants ─────────────────────────────────────────────────────────────
+# DRIFT GUARD: edit these checks when you add or remove a fork feature. A green merge
+# that silently drops a fork feature is the exact failure mode this section prevents.
+# (Source-level — runs even when the release build above failed.)
+bold "── Fork invariants ──"
+inv_exists "src/cmds/cloud/az_cmd.rs"                  "Azure filter az_cmd.rs present"
+inv_grep   "Commands::Az" "src/main.rs"                "Az command wired in main.rs"
+inv_absent "src/mcp"                                   "MCP bridge dir removed (fork)"
+inv_absent "src/hooks/mcp_rewrite_cmd.rs"              "MCP rewrite cmd removed (fork)"
+inv_grep   "libc::SIGPIPE, libc::SIG_DFL" "src/main.rs" "SIGPIPE reset handler present"
+inv_grep   "handle_signal" "src/main.rs"               "SIGINT/SIGTERM child-kill handler present"
+inv_grep   "build_parallel" "src/cmds/system/find_cmd.rs" "find parallel-walk perf (untested-for-removal)"
+inv_exists "src/core/args_utils.rs"                    "args_utils (-- restoration) present"
+inv_exists "FORK_NOTES.md"                             "FORK_NOTES.md present"
+# Conflict markers anywhere in src/ — quiet (-l), never dump the matched lines.
+if grep -rlqE '^(<{7}|={7}|>{7})' src/ 2>/dev/null; then fail "conflict markers present in src/"; RC=1; else pass "no conflict markers in src/"; fi
+# Fork version marker — the §5 base-version check strips '-fork.N', so assert it survives here.
+if grep -m1 '^version' Cargo.toml | grep -qF -- '-fork'; then pass "Cargo.toml version carries -fork marker"; else fail "Cargo.toml lost -fork version suffix"; RC=1; fi
 echo
 
 # ── 3. Behavior spot-checks ─────────────────────────────────────────────────────
@@ -63,6 +92,13 @@ if [ -x "$BIN" ]; then
     fail "gh no-id: rtk still pre-rejects 'gh pr view' with 'number required'"; RC=1
   else
     pass "gh no-id: rtk forwards 'gh pr view' (no pre-rejection)"
+  fi
+
+  # args_utils: `rtk grep <pat> -- <file>` must restore the -- separator (fork fix #1 cmd).
+  if "$BIN" grep "fn main" -- src/main.rs 2>/dev/null | grep -q "fn main"; then
+    pass "args_utils: 'rtk grep <pat> -- <file>' restores -- and matches"
+  else
+    fail "args_utils: 'rtk grep <pat> -- <file>' broke -- handling"; RC=1
   fi
 else
   warn "release binary missing — skipping behavior checks"
