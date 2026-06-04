@@ -1,7 +1,12 @@
 ---
-description: RTK fork upgrade-check — fetch upstream, diff vs fork, score impact on high-traffic filters, recommend defer vs merge. Trigger when user asks about RTK upstream updates, "should I upgrade my fork", "check rtk upstream", or wants a changelog of new upstream commits.
+description: DEPRECATED — superseded by the rtk-upgrade-2 skill. Kept on disk for reference/rollback only; do not auto-invoke for upgrade requests. Use rtk-upgrade-2 instead.
 allowed-tools: Bash Read Grep
 ---
+
+> **DEPRECATED (2026-06-03).** Superseded by `.claude/skills/rtk-upgrade-2/` — the orchestrate-
+> and-render contract that wraps these same scripts with a scripted merge-abort path and a
+> fork-invariants gate. This file is retained for reference and rollback. The scripts it
+> references (`upgrade-check.sh`, `post-merge-verify.sh`) are still live and shared with v2.
 
 # RTK Upgrade Check
 
@@ -45,7 +50,7 @@ Defined in `scripts/upgrade-check.sh` as `HOT_PATHS`. These are the only paths w
 - `src/core/toml_filter.rs` + `filters/` — TOML filter engine + configs
 - `src/core/utils.rs` — cross-cutting helpers (strip_ansi, truncate)
 
-If you update this list, also update `memory/rtk_upgrade_check.md` and `HOT_PATHS` in the script.
+If you update this list, also update `HOT_PATHS` in `scripts/upgrade-check.sh`.
 
 ## Decision Rule
 
