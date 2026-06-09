@@ -5,10 +5,10 @@ allowed-tools: Bash Read AskUserQuestion
 
 # RTK Upgrade (orchestrate, don't improvise)
 
-Drive the RTK fork upgrade with **two script commands and a render step**. The scripts are
-deterministic and emit compact `✓`/`✗` checklists; your job is to run them, render their output,
-and gate the push. Do NOT re-verify by hand — that manual re-checking is the context bloat this
-skill exists to eliminate.
+Drive the RTK fork upgrade with **three script subcommands (check / apply / install) and a render
+step**. The scripts are deterministic and emit compact `✓`/`✗` checklists; your job is to run them,
+render their output, and gate the install + push. Do NOT re-verify by hand — that manual re-checking
+is the context bloat this skill exists to eliminate.
 
 ## Why this is scripted
 
@@ -21,6 +21,10 @@ pull+reinstall. All that determinism lives in the scripts, so it never has to li
 - `bash scripts/rtk-upgrade.sh apply` → re-preview, merge `upstream/develop` (scripted abort on
   conflict), full quality gate + fork-invariant assertions + behavior spot-checks. Leaves the
   merge **committed-but-UNPUSHED**.
+- `bash scripts/rtk-upgrade.sh install` → `cargo install --path . --force` the merged binary into
+  `~/.cargo/bin`, then assert the installed `rtk --version` matches the merged `Cargo.toml` version.
+  This is what makes the upgrade *take effect* for the user's shell — `apply` only builds
+  `target/release/rtk`. Local + reversible (reinstall the prior tag).
 
 ## Flow
 
@@ -39,7 +43,14 @@ pull+reinstall. All that determinism lives in the scripts, so it never has to li
 6. **If any gate shows `✗`** → read the inline failure digest first. Open `/tmp/pmv_*.txt` only if
    the digest is insufficient, and **at most the first ~60 lines**. Fix the cause, then re-run
    `bash scripts/post-merge-verify.sh` to reverify — never hand-roll `cargo`.
-7. **All gates `✓`** → ask the user to confirm the push (AskUserQuestion). On confirm,
+7. **All gates `✓`** → ask the user to confirm the local install (AskUserQuestion). On confirm,
+   run `bash scripts/rtk-upgrade.sh install` **once** and render its `✓`/`✗`. This recompiles and
+   installs the merged binary to `~/.cargo/bin` and verifies the installed `rtk --version` matches
+   the merged `Cargo.toml` — it's what makes the upgrade take effect for the user's shell. On an
+   install `✗` (build failure or version mismatch), read the inline digest, fix, and re-run the
+   `install` subcommand — never hand-roll `cargo install`. **Install before push** (prove the local
+   binary works, then publish).
+8. **Install `✓`** → ask the user to confirm the push (AskUserQuestion). On confirm,
    `git push origin <branch>`. Otherwise leave it committed-unpushed.
 
 ## Rules (the whole point — follow exactly)
@@ -51,6 +62,9 @@ pull+reinstall. All that determinism lives in the scripts, so it never has to li
   `post-merge-verify.sh` after a human fix). Reverify with the script, never by hand.
 - **Verbose output stays in `/tmp`.** Read the inline digest; open `/tmp/pmv_*.txt` only on `✗`,
   capped at ~60 lines. Never paginate diffs or build logs.
+- **Install is confirmed but not the hard gate.** `cargo install` is local + reversible (reinstall
+  the previous tag), so confirm it like the push but don't treat it as outward-facing. It always
+  goes through the `install` subcommand — never hand-roll `cargo install`.
 - **Push is the only hard gate.** The local merge is reversible (`git reset --hard ORIG_HEAD`);
   the push is outward-facing — always confirm it.
 
