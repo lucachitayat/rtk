@@ -10,6 +10,10 @@ step**. The scripts are deterministic and emit compact `✓`/`✗` checklists; y
 render their output, and gate the install + push. Do NOT re-verify by hand — that manual re-checking
 is the context bloat this skill exists to eliminate.
 
+The scripts live at the **repo root** (`<repo>/scripts/`), not in this skill folder. Run them from
+the rtk project root exactly as written — `bash scripts/rtk-upgrade.sh check` — never rewrite the
+path relative to the skill directory.
+
 ## Why this is scripted
 
 rtk is a *fork* (Azure `az_cmd`, removed MCP bridge, SIGPIPE / `find` parallel-walk / args_utils
