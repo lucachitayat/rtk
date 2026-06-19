@@ -74,6 +74,11 @@ MASTER_BEHIND=$(git rev-list --count develop..upstream/master 2>/dev/null || ech
 echo "develop behind upstream/develop: $DEV_BEHIND commits  (develop is the merge source)"
 echo "develop ahead  of upstream/develop: $DEV_AHEAD commits"
 dim "develop behind upstream/master:  $MASTER_BEHIND commits  (informational — fork syncs from develop)"
+# Version delta — apply will retrack fork to <develop-base>-dev-fork.N (see SKILL.md § Versioning).
+FORK_VER=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')
+UP_DEV_VER=$(git show upstream/develop:Cargo.toml 2>/dev/null | grep -m1 '^version' | sed -E 's/.*"(.*)".*/\1/')
+UP_MAS_VER=$(git show upstream/master:Cargo.toml 2>/dev/null | grep -m1 '^version' | sed -E 's/.*"(.*)".*/\1/')
+dim "version: fork ${FORK_VER:-?} | develop ${UP_DEV_VER:-?} | master ${UP_MAS_VER:-?}"
 echo
 
 # The fork syncs from upstream/develop; master-ahead is informational only, never a merge source.

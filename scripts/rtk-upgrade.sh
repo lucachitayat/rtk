@@ -30,6 +30,95 @@ green() { printf "\033[32m%s\033[0m\n" "$*"; }
 
 usage() { echo "usage: bash scripts/rtk-upgrade.sh {check | apply [ref] | install}"; exit 2; }
 
+# ── Fork versioning (spec: .claude/skills/rtk-upgrade-2/SKILL.md § Versioning) ──
+# Fork version = "<upstream/develop base>-dev-fork.<N>", mirrored in lockstep across
+# Cargo.toml, .release-please-manifest.json, and Cargo.lock's own `rtk` entry.
+# DRIFT GUARD: these three files are the canonical version sites. CHANGELOG.md is resolved
+# by the `merge=union` driver in .gitattributes and never reaches the conflict set. If a new
+# version-carrying file appears, add it here AND to post-merge-verify.sh's consistency gate.
+VERSION_FILES=(Cargo.toml .release-please-manifest.json Cargo.lock)
+
+cargo_ver() { grep -m1 '^version' "$1" 2>/dev/null | sed -E 's/.*"(.*)".*/\1/'; }
+
+# Compute the fork target version from upstream/develop's base. Fail closed (return 1) on
+# build metadata or a malformed result rather than fabricate a bad version. Prints target.
+compute_target() {
+  local up_ver up_base n target
+  up_ver=$(git show upstream/develop:Cargo.toml 2>/dev/null | grep -m1 '^version' | sed -E 's/.*"(.*)".*/\1/')
+  [ -n "$up_ver" ] || { fail "cannot read upstream/develop Cargo.toml version" >&2; return 1; }
+  case "$up_ver" in
+    *+*) fail "upstream version '$up_ver' carries build metadata (+) — refusing to fabricate a fork version" >&2; return 1 ;;
+  esac
+  up_base=${up_ver%%-*}
+  # N = max existing <base>-dev-fork.N tag + 1, else 1 (monotonic, collision-safe).
+  n=$(git tag -l "${up_base}-dev-fork.*" | sed -E 's/.*-dev-fork\.([0-9]+)$/\1/' | grep -E '^[0-9]+$' | sort -n | tail -1)
+  if [ -n "$n" ]; then n=$((n + 1)); else n=1; fi
+  target="${up_base}-dev-fork.${n}"
+  if ! printf '%s' "$target" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+-dev-fork\.[0-9]+$'; then
+    fail "computed fork version '$target' is malformed — aborting" >&2; return 1
+  fi
+  printf '%s' "$target"
+}
+
+# Reconcile the fork version across the three canonical files, then commit. UNCONDITIONAL:
+# always sets the spec target (never keeps a bare/suffix-stripped version). Idempotent: no
+# commit if everything already matches. Returns non-zero on failure.
+reconcile_version() {
+  local target cur
+  target=$(compute_target) || return 1
+  cur=$(cargo_ver Cargo.toml)
+  if [ "$cur" = "$target" ]; then
+    dim "  version already $target — no reconcile needed"
+    return 0
+  fi
+  bold "── Reconciling fork version → $target ──"
+  # Cargo.toml: rewrite ONLY the first `^version = "..."` (the [package] version).
+  perl -i -pe 'if (!$d && /^version\s*=/) { s/"[^"]*"/"'"$target"'"/; $d=1 }' Cargo.toml
+  # manifest: rewrite the "." value.
+  perl -i -pe 's/("\."\s*:\s*)"[^"]*"/${1}"'"$target"'"/' .release-please-manifest.json
+  # Cargo.lock: rewrite the rtk own-package version (deterministic; no network/cargo needed).
+  perl -0777 -i -pe 's/(\[\[package\]\]\nname = "rtk"\nversion = )"[^"]*"/${1}"'"$target"'"/' Cargo.lock
+  git add Cargo.toml .release-please-manifest.json Cargo.lock
+  if git commit -m "chore(fork): retrack version to ${target}" >/dev/null 2>&1; then
+    green "  ✓ version retracked to $target (Cargo.toml, manifest, Cargo.lock)"
+  else
+    fail "version reconcile commit failed"; return 1
+  fi
+}
+
+# Resolve a conflicted merge IFF every conflicted path is mechanically resolvable:
+#   Cargo.toml / manifest → take OURS (preserve fork-owned lines), version fixed by reconcile;
+#   Cargo.lock            → take OURS, rtk entry fixed by reconcile.
+# Cargo.toml is taken OURS only if upstream changed nothing but the version line (else a real
+# dependency/manifest change needs human review). CHANGELOG.md is handled by merge=union and
+# never appears here. Any other conflict → caller aborts. Returns 0 if fully resolved, 1 else.
+resolve_mechanical_conflicts() {
+  local u f base_toml theirs_toml
+  u=$(git diff --name-only --diff-filter=U 2>/dev/null)
+  [ -n "$u" ] || return 1
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    case " ${VERSION_FILES[*]} " in
+      *" $f "*) ;;                       # handled below
+      *) return 1 ;;                     # unhandled path → not mechanical
+    esac
+    if [ "$f" = "Cargo.toml" ]; then
+      # Guard: upstream side (:3) must differ from base (:1) ONLY in version line(s).
+      base_toml=$(git show :1:Cargo.toml 2>/dev/null | grep -v '^version')
+      theirs_toml=$(git show :3:Cargo.toml 2>/dev/null | grep -v '^version')
+      if [ "$base_toml" != "$theirs_toml" ]; then
+        fail "upstream changed non-version lines in Cargo.toml — needs human review" >&2
+        return 1
+      fi
+    fi
+    git checkout --ours -- "$f" || return 1   # --ours = fork; rc!=0 (e.g. modify/delete) → abort
+    git add -- "$f" || return 1
+  done <<< "$u"
+  # Nothing must remain unmerged before we complete the merge commit.
+  [ -z "$(git diff --name-only --diff-filter=U 2>/dev/null)" ] || return 1
+  return 0
+}
+
 cmd_check() {
   # upgrade-check.sh fetches upstream and prints the full decision report, ending with a
   # machine-stable `RECOMMENDATION: CURRENT|DEFER|INVESTIGATE` line we map to a next command.
@@ -67,18 +156,13 @@ cmd_apply() {
     exit 1
   fi
 
-  # Re-run the read-only preview at merge time against HEAD (authoritative, unlike a stale check).
-  git merge-tree --write-tree --name-only HEAD "$target" >/tmp/rtk_mt.txt 2>/dev/null
-  local mt_rc=$?
-  if [ "$mt_rc" = "0" ]; then
-    green "✓ Merge preview clean — proceeding."
-  elif [ "$mt_rc" = "1" ]; then
-    fail "merge preview shows conflicts — refusing to auto-merge. Conflicting paths:"
-    tail -n +2 /tmp/rtk_mt.txt | sed '/^$/d' | sed 's/^/    /'
-    echo "Resolve by hand, or merge manually. Tree untouched."
-    exit 1
+  # Read-only preview at merge time — ADVISORY only. merge-tree --name-only does not cleanly
+  # enumerate conflicted paths, so we never decide on it: the guarded real merge below is the
+  # sole authority (its --diff-filter=U set drives mechanical-resolve-or-abort).
+  if git merge-tree --write-tree HEAD "$target" >/dev/null 2>&1; then
+    green "✓ Merge preview clean."
   else
-    dim "(merge-tree unavailable — needs git >= 2.38; proceeding with a guarded real merge.)"
+    dim "(merge preview shows conflicts — the guarded merge will mechanically resolve version/changelog conflicts or abort.)"
   fi
 
   local n sha
@@ -89,10 +173,30 @@ cmd_apply() {
   if git merge --no-ff "$target" -m "merge: sync $target @ $sha ($n commits)"; then
     green "✓ Merge committed (NOT pushed)."
   else
-    local conflicts
-    conflicts=$(git diff --name-only --diff-filter=U 2>/dev/null | tr '\n' ' ')
-    git merge --abort 2>/dev/null || true
-    fail "merge aborted — conflicts in: ${conflicts:-<unknown>}. Tree restored to pre-merge HEAD."
+    # Conflict. Resolve ONLY the mechanical version/lock conflicts (fork-preserving); abort
+    # on anything else, restoring the pre-merge tree exactly as the old behavior did.
+    if resolve_mechanical_conflicts; then
+      if git commit --no-edit >/dev/null 2>&1; then
+        green "✓ Merge committed (version conflicts auto-resolved, fork lines preserved, NOT pushed)."
+      else
+        git merge --abort 2>/dev/null || true
+        fail "could not complete merge commit after resolution. Tree restored to pre-merge HEAD."
+        exit 1
+      fi
+    else
+      local conflicts
+      conflicts=$(git diff --name-only --diff-filter=U 2>/dev/null | tr '\n' ' ')
+      git merge --abort 2>/dev/null || true
+      fail "merge aborted — non-mechanical conflicts in: ${conflicts:-<unknown>}. Tree restored to pre-merge HEAD."
+      exit 1
+    fi
+  fi
+  echo
+
+  # Retrack the fork version to <upstream-base>-dev-fork.N (idempotent; no-op if already correct).
+  if ! reconcile_version; then
+    fail "version reconcile failed — merge is committed but version may be wrong."
+    dim "  To undo the merge: git reset --hard ORIG_HEAD"
     exit 1
   fi
   echo

@@ -72,8 +72,10 @@ inv_grep   "handle_signal" "src/main.rs"               "SIGINT/SIGTERM child-kil
 inv_grep   "build_parallel" "src/cmds/system/find_cmd.rs" "find parallel-walk perf (untested-for-removal)"
 inv_exists "src/core/args_utils.rs"                    "args_utils (-- restoration) present"
 inv_exists "FORK_NOTES.md"                             "FORK_NOTES.md present"
-# Conflict markers anywhere in src/ — quiet (-l), never dump the matched lines.
-if grep -rlqE '^(<{7}|={7}|>{7})' src/ 2>/dev/null; then fail "conflict markers present in src/"; RC=1; else pass "no conflict markers in src/"; fi
+# Conflict markers in src/ AND the canonical version files — quiet (-l), never dump matches.
+# (CHANGELOG.md is excluded: merge=union can leave `=======` setext-heading lines that the
+# 7-char marker regex would false-positive on.)
+if grep -rlqE '^(<{7}|={7}|>{7})' src/ Cargo.toml Cargo.lock .release-please-manifest.json 2>/dev/null; then fail "conflict markers present in src/ or version files"; RC=1; else pass "no conflict markers in src/ or version files"; fi
 # Fork version marker — the §5 base-version check strips '-fork.N', so assert it survives here.
 if grep -m1 '^version' Cargo.toml | grep -qF -- '-fork'; then pass "Cargo.toml version carries -fork marker"; else fail "Cargo.toml lost -fork version suffix"; RC=1; fi
 echo
@@ -125,12 +127,26 @@ if [ -n "$up_ver" ]; then
   fork_base=${fork_ver%%-*}; up_base=${up_ver%%-*}
   lowest=$(printf '%s\n%s\n' "$fork_base" "$up_base" | sort -V | head -1)
   if [ "$fork_base" != "$up_base" ] && [ "$lowest" = "$fork_base" ]; then
-    warn "fork version ($fork_ver) base is BELOW upstream ($up_ver) — bump fork version"
+    # A deferred fork legitimately trails upstream's base between syncs — WARN, never fail.
+    warn "fork version ($fork_ver) base is BELOW upstream ($up_ver) — deferred, or bump on next sync"
   else
     pass "fork version $fork_ver >= upstream $up_ver (base)"
   fi
 else
   dim "  (could not read upstream Cargo.toml version)"
+fi
+
+# Cross-file version consistency — reconcile MUST keep the three canonical sites in lockstep.
+# This is the hard guarantee (the base check above stays a WARN to tolerate deferred forks).
+manifest_ver=$(grep -oE '"\." *: *"[^"]*"' .release-please-manifest.json 2>/dev/null | sed -E 's/.*"([^"]*)" *$/\1/')
+lock_ver=$(perl -0777 -ne 'print $1 if /\[\[package\]\]\nname = "rtk"\nversion = "([^"]*)"/' Cargo.lock 2>/dev/null)
+if [ "$fork_ver" = "$manifest_ver" ] && [ "$fork_ver" = "$lock_ver" ]; then
+  case "$fork_ver" in
+    *-dev-fork.*) pass "version consistent + fork-marked across Cargo.toml, manifest, Cargo.lock ($fork_ver)" ;;
+    *) fail "version consistent but lost -dev-fork marker ($fork_ver)"; RC=1 ;;
+  esac
+else
+  fail "version mismatch — Cargo.toml=$fork_ver manifest=${manifest_ver:-<none>} Cargo.lock=${lock_ver:-<none>}"; RC=1
 fi
 echo
 
