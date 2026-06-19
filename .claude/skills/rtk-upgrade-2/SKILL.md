@@ -14,6 +14,24 @@ The scripts live at the **repo root** (`<repo>/scripts/`), not in this skill fol
 the rtk project root exactly as written — `bash scripts/rtk-upgrade.sh check` — never rewrite the
 path relative to the skill directory.
 
+## Versioning (what `apply` reconciles)
+
+The fork version is **`<upstream/develop Cargo.toml base>-dev-fork.<N>`** — e.g. upstream develop
+`0.42.5` → fork `0.42.5-dev-fork.1`. `apply` retracks it automatically after every merge; you never
+hand-edit it.
+
+- **N** = `max(existing git tags "<base>-dev-fork.*") + 1`, else `1` (monotonic, collision-safe).
+- **Canonical sites (lockstep):** `Cargo.toml`, `.release-please-manifest.json`, and `Cargo.lock`'s
+  own `rtk` entry. `post-merge-verify.sh §5` hard-fails if these three disagree.
+- **Conflict resolution** is fork-preserving, NOT blanket take-upstream: on a version-bumping sync,
+  `apply` takes **ours** for `Cargo.toml`/manifest (keeping fork-owned lines — `description`,
+  `license`, the `insta` dev-dep, deps) and lets reconcile overwrite only the version; it **aborts**
+  if upstream changed any non-version line in `Cargo.toml` (a real dependency change needs you).
+  `CHANGELOG.md` is resolved by the `merge=union` driver in `.gitattributes` (keeps both histories).
+- **Known, accepted property:** `-dev-fork.N` is a semver *pre-release*, so it sorts *below* its
+  base (`0.42.2-dev-fork.1` < `0.42.2`). The scripts compare on **base**, and `install` keeps
+  `cargo install --force` so this never reads as a refused "downgrade".
+
 ## Why this is scripted
 
 rtk is a *fork* (Azure `az_cmd`, removed MCP bridge, SIGPIPE / `find` parallel-walk / args_utils
@@ -22,9 +40,10 @@ pull+reinstall. All that determinism lives in the scripts, so it never has to li
 
 - `bash scripts/rtk-upgrade.sh check` → fetch + decision report; ends with machine-stable
   `RECOMMENDATION:` and `next:` lines.
-- `bash scripts/rtk-upgrade.sh apply` → re-preview, merge `upstream/develop` (scripted abort on
-  conflict), full quality gate + fork-invariant assertions + behavior spot-checks. Leaves the
-  merge **committed-but-UNPUSHED**.
+- `bash scripts/rtk-upgrade.sh apply` → merge `upstream/develop`, auto-resolving ONLY the
+  mechanical version/changelog conflicts (fork-preserving — see § Versioning) and aborting on any
+  other conflict, then retrack the fork version, then full quality gate + fork-invariant
+  assertions + behavior spot-checks. Leaves the merge **committed-but-UNPUSHED**.
 - `bash scripts/rtk-upgrade.sh install` → `cargo install --path . --force` the merged binary into
   `~/.cargo/bin`, then assert the installed `rtk --version` matches the merged `Cargo.toml` version.
   This is what makes the upgrade *take effect* for the user's shell — `apply` only builds
@@ -79,7 +98,12 @@ pass/fail summary). Don't restate the full diff stat unless asked.
 
 ## Maintenance
 
-The decision pivots — `HOT_PATHS` (in `scripts/upgrade-check.sh`) and the fork-invariant checks
-(in `scripts/post-merge-verify.sh`) — are hand-maintained and each carries a `DRIFT GUARD`
-comment. When you add or remove a fork feature or a high-traffic filter, update those lists in
-the same change so this skill can't silently bless a merge that dropped a fork feature.
+The decision pivots — `HOT_PATHS` (in `scripts/upgrade-check.sh`), the fork-invariant checks
+(in `scripts/post-merge-verify.sh`), and the `VERSION_FILES` set (in `scripts/rtk-upgrade.sh`) —
+are hand-maintained and each carries a `DRIFT GUARD` comment. When you add or remove a fork
+feature, a high-traffic filter, or a version-carrying file, update the matching list in the same
+change so this skill can't silently bless a merge that dropped a fork feature or skipped a version
+site. The version scheme + conflict contract live in § Versioning above; `Cargo.toml`,
+`.release-please-manifest.json`, and `Cargo.lock` are the only files `apply` reconciles — if a new
+version-carrying file appears (e.g. a real `Formula/rtk.rb` version), add it to `VERSION_FILES` and
+the §5 consistency gate, or it will drift.
