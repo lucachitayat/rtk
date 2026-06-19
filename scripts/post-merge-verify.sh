@@ -50,6 +50,12 @@ if cargo test --all >/tmp/pmv_test.txt 2>&1; then
 else
   fail "cargo test (digest below; full: /tmp/pmv_test.txt)"; digest /tmp/pmv_test.txt; RC=1
 fi
+# Shell-script tests (NOT covered by cargo): the master-only fix detector.
+if bash scripts/test-master-only.sh >/tmp/pmv_shtest.txt 2>&1; then
+  pass "shell tests ($(grep -hoE '[0-9]+ passed' /tmp/pmv_shtest.txt | head -1) — master-only detector)"
+else
+  fail "shell tests (digest below; full: /tmp/pmv_shtest.txt)"; digest /tmp/pmv_shtest.txt; RC=1
+fi
 echo
 
 # ── 2. Release build (needed for behavior checks) ───────────────────────────────

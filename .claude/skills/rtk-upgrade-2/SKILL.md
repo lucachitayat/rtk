@@ -54,6 +54,13 @@ pull+reinstall. All that determinism lives in the scripts, so it never has to li
 1. Run `bash scripts/rtk-upgrade.sh check` **once**. Render its output. Read the final
    `RECOMMENDATION:` and `next:` lines.
 2. **CURRENT** or **DEFER** → report the one-line rationale and STOP. (The usual outcome.)
+   - **EXCEPTION — master-only alert.** `check` independently scans `upstream/master` for fixes
+     the develop sync can NOT bring in (rare security backports / hotfixes). If it emits a
+     `MASTER_ALERT:` line (the dispatcher reprints it as a `⚠ MASTER-ONLY:` warning under `next:`),
+     do NOT silently stop — surface it even on CURRENT/DEFER. These are ported **directly**, not via
+     the develop merge: `git show <sha>` to inspect, then `git cherry-pick -x <sha>` (auto-cites the
+     SHA) or a hand-port that names the SHA in the commit body. The body citation is what makes the
+     next `check` recognise it as `✓ ported` and stop re-alerting.
 3. **Check-only phrasing** — the user asked a *question* ("should I…?", "anything worth pulling?",
    "what's new?") → STOP after the check report regardless of recommendation. Never auto-merge
    on a question.
@@ -102,6 +109,13 @@ pass/fail summary). Don't restate the full diff stat unless asked.
   and the deletion counts are upstream's, not yours. If you (or the user) see this section, do NOT
   read it as "the merge will delete fork files" — by construction it cannot, and the merge-tree
   preview directly below it is the authoritative conflict signal. No investigation warranted.
+- **"Master-only commits (NOT reachable via develop sync)"** lists `upstream/master`-only commits,
+  each tagged `🔴 SECURITY` / `⚠ unported` / `✓ ported`. Release/chore/ci noise is filtered; a commit
+  is `✓ ported` if it's an ancestor of the fork OR its SHA is cited in a fork commit body. This is
+  the fork's blind spot (it syncs from develop only), so anything `🔴`/`⚠` here is real, unported,
+  and needs a direct port — see Flow step 2's exception. Detector lives in
+  `scripts/lib/master-only.sh`, tested by `scripts/test-master-only.sh` (run inside
+  `post-merge-verify.sh`, since shell tests are NOT covered by `cargo test`/`clippy`).
 
 ## Maintenance
 

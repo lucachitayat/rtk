@@ -122,10 +122,12 @@ resolve_mechanical_conflicts() {
 cmd_check() {
   # upgrade-check.sh fetches upstream and prints the full decision report, ending with a
   # machine-stable `RECOMMENDATION: CURRENT|DEFER|INVESTIGATE` line we map to a next command.
-  local out rec
+  local out rec master_alert
   out=$(bash scripts/upgrade-check.sh)
   printf '%s\n' "$out"
   rec=$(printf '%s\n' "$out" | grep -E '^RECOMMENDATION:' | tail -1 | awk '{print $2}')
+  # Additive signal: master-only fixes the develop sync can't bring in (rare, often security).
+  master_alert=$(printf '%s\n' "$out" | grep -E '^MASTER_ALERT:' | tail -1 | sed 's/^MASTER_ALERT: //')
   echo
   bold "── Next ──"
   case "$rec" in
@@ -133,6 +135,9 @@ cmd_check() {
     DEFER|CURRENT) echo "next: (none — fork needs no merge)" ;;
     *)            echo "next: (no recommendation parsed — read the report above)" ;;
   esac
+  if [ -n "$master_alert" ]; then
+    fail "⚠ MASTER-ONLY: $master_alert — port directly (develop sync will NOT bring these in; see report)."
+  fi
 }
 
 cmd_apply() {

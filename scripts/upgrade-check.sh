@@ -52,6 +52,11 @@ dim()    { printf "\033[2m%s\033[0m\n" "$*"; }
 hot()    { printf "\033[33m%s\033[0m\n" "$*"; }
 green()  { printf "\033[32m%s\033[0m\n" "$*"; }
 
+# Master-only fix detection (check_master_only, MASTER_UNPORTED, MASTER_SECURITY).
+# Extracted to a lib so it is unit-testable from scripts/test-master-only.sh.
+# shellcheck source=lib/master-only.sh
+source "$REPO_ROOT/scripts/lib/master-only.sh"
+
 bold "=== RTK upgrade-check ==="
 echo "repo: $REPO_ROOT"
 echo "branch: $(git rev-parse --abbrev-ref HEAD)"
@@ -73,7 +78,7 @@ DEV_AHEAD=$(git rev-list --count upstream/develop..develop 2>/dev/null || echo "
 MASTER_BEHIND=$(git rev-list --count develop..upstream/master 2>/dev/null || echo "?")
 echo "develop behind upstream/develop: $DEV_BEHIND commits  (develop is the merge source)"
 echo "develop ahead  of upstream/develop: $DEV_AHEAD commits"
-dim "develop behind upstream/master:  $MASTER_BEHIND commits  (informational — fork syncs from develop)"
+dim "develop behind upstream/master:  $MASTER_BEHIND commits  (broken down in Master-only section below)"
 # Version delta — apply will retrack fork to <develop-base>-dev-fork.N (see SKILL.md § Versioning).
 FORK_VER=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')
 UP_DEV_VER=$(git show upstream/develop:Cargo.toml 2>/dev/null | grep -m1 '^version' | sed -E 's/.*"(.*)".*/\1/')
@@ -81,14 +86,33 @@ UP_MAS_VER=$(git show upstream/master:Cargo.toml 2>/dev/null | grep -m1 '^versio
 dim "version: fork ${FORK_VER:-?} | develop ${UP_DEV_VER:-?} | master ${UP_MAS_VER:-?}"
 echo
 
+# Master-only check runs UNCONDITIONALLY (before the CURRENT early-exit): these
+# fixes are independent of develop-sync status — the fork can be fully current
+# vs develop and still be missing a security backport sitting on master.
+bold "── Master-only commits (NOT reachable via develop sync) ──"
+check_master_only
+if [ "$MASTER_UNPORTED" != "0" ]; then
+  echo
+  extra=""
+  [ "$MASTER_SECURITY" != "0" ] && extra=", incl. ${MASTER_SECURITY} security"
+  hot "  → ${MASTER_UNPORTED} unported master-only commit(s)${extra}. To inspect / port:"
+  echo "      git show <sha>            # inspect the fix"
+  echo "      git cherry-pick -x <sha>  # port (auto-cites SHA), or hand-port citing the SHA in the body"
+fi
+echo
+
+# Additive machine-stable line (does NOT replace RECOMMENDATION — parsers key on that).
+emit_master_alert() {
+  [ "$MASTER_UNPORTED" != "0" ] \
+    && echo "MASTER_ALERT: ${MASTER_UNPORTED} unported master-only commit(s) (${MASTER_SECURITY} security)"
+}
+
 # The fork syncs from upstream/develop; master-ahead is informational only, never a merge source.
 if [ "$DEV_BEHIND" = "0" ]; then
   green "✓ Fork is current vs upstream/develop (the merge source)."
-  if [ "$MASTER_BEHIND" != "0" ] && [ "$MASTER_BEHIND" != "?" ]; then
-    dim "  ($MASTER_BEHIND commits ahead on upstream/master — not a sync source; ignore unless retargeting.)"
-  fi
   echo
   echo "RECOMMENDATION: CURRENT"
+  emit_master_alert
   exit 0
 fi
 
@@ -202,10 +226,11 @@ else
   emit_verification_block
 fi
 
-# Machine-stable trailer — the dispatcher (rtk-upgrade.sh) parses this last line.
+# Machine-stable trailer — the dispatcher (rtk-upgrade.sh) parses the RECOMMENDATION line.
 echo
 if [ "$HOT_HITS" = "0" ]; then
   echo "RECOMMENDATION: DEFER"
 else
   echo "RECOMMENDATION: INVESTIGATE"
 fi
+emit_master_alert
