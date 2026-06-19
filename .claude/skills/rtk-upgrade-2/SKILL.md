@@ -96,6 +96,13 @@ pull+reinstall. All that determinism lives in the scripts, so it never has to li
 Render the script checklists; add a one-line headline (the `RECOMMENDATION`, or the apply
 pass/fail summary). Don't restate the full diff stat unless asked.
 
+- **"Files touched by new upstream/develop commits" is a three-dot diff** (`develop...upstream/develop`):
+  it lists ONLY the upstream-side delta since the merge-base — i.e. exactly what the merge brings in.
+  Fork-only files (FORK_NOTES.md, `scripts/`, `az_cmd.rs`, this SKILL, …) will **never** appear there,
+  and the deletion counts are upstream's, not yours. If you (or the user) see this section, do NOT
+  read it as "the merge will delete fork files" — by construction it cannot, and the merge-tree
+  preview directly below it is the authoritative conflict signal. No investigation warranted.
+
 ## Maintenance
 
 The decision pivots — `HOT_PATHS` (in `scripts/upgrade-check.sh`), the fork-invariant checks

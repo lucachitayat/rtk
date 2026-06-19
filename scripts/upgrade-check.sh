@@ -102,7 +102,13 @@ fi
 echo
 
 bold "── Files touched by new upstream/develop commits ──"
-git diff --stat develop..upstream/develop | tail -40
+dim "(three-dot upstream-side delta since the merge-base — only what the merge brings in; fork-only files are NOT listed)"
+# THREE-DOT (develop...upstream/develop): files changed on the UPSTREAM side since the
+# merge-base — i.e. exactly what the merge brings in. Two-dot (develop..upstream/develop)
+# symmetrically diffs the two endpoints and renders the fork's own commits as huge
+# "deletions" (FORK_NOTES.md, scripts/, az_cmd.rs, …) — misleading, and it once triggered
+# a false-alarm investigation. This list mirrors the merge-tree preview below.
+git diff --stat develop...upstream/develop | tail -40
 echo
 
 bold "── Commits touching HIGH-TRAFFIC filter paths ──"
