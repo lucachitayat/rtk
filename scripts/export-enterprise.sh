@@ -592,6 +592,11 @@ echo "[6/8] Verifying …"
 # 6a. No telemetry / ureq / getrandom / maybe_ping / TelemetryConfig refs remain
 #     in ANY file under src/ (not just .rs — covers README.md and other docs).
 echo "      [6a] Checking for residual telemetry refs in ALL files under src/ …"
+if ! command -v rg &>/dev/null; then
+    echo "FATAL: 'rg' (ripgrep) is required for verification but was not found in PATH." >&2
+    echo "       Install with: cargo install ripgrep  OR  brew install ripgrep" >&2
+    exit 1
+fi
 GREP_HIT="$(rg -rniE 'telemetry|maybe_ping|ureq|TelemetryConfig|getrandom' "${OUT_DIR}/src/" 2>/dev/null || true)"
 if [[ -n "${GREP_HIT}" ]]; then
     echo "FATAL: residual references found under src/:" >&2
