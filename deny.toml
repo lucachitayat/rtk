@@ -1,0 +1,124 @@
+# deny.toml — cargo-deny configuration for the RTK enterprise-hardened build.
+#
+# Technique re-authored from github.com/bmjcoding/rtk-enterprise (Apache-2.0).
+# Original concept: compile-time supply-chain guard banning HTTP/TLS clients
+# and async runtimes. This file is re-authored for the rtk-ai/rtk 0.42.x
+# dependency surface; the banned-crate list and schema are independently
+# derived but acknowledge the prior art.
+#
+# Schema: cargo-deny v0.14+ (advisories.ignore → advisories.ignore-git,
+# bans.deny entries as inline tables).
+#
+# Wire this into CI:
+#   cargo deny check              # all checks
+#   cargo deny check bans         # bans only (fast, good for PR gate)
+#
+# Run locally:
+#   cargo install cargo-deny --locked
+#   cargo deny check bans
+
+# ---------------------------------------------------------------------------
+# [advisories] — known-vulnerability database
+# ---------------------------------------------------------------------------
+[advisories]
+# Path to a local advisory-db clone for air-gapped / staged builds.
+# Leave unset to use the online fetch (networked staging machine only).
+# db-path = "vendor/advisory-db"
+# db-urls = []   # empty = offline; omit = use default RustSec URL
+
+# Treat unmaintained crates as warnings, not errors (we document separately).
+unmaintained = "warn"
+
+# Yanked versions are errors — don't use a yanked dep, even transiently.
+yanked = "deny"
+
+# ---------------------------------------------------------------------------
+# [licenses] — permissive allow-list
+# ---------------------------------------------------------------------------
+[licenses]
+# Reject any crate whose license is not in this list.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "CC0-1.0",
+    "OpenSSL",         # for ring's BoringSSL-derived asm — present even without linking openssl
+]
+# Confidence threshold for license text matching (0.0–1.0).
+confidence-threshold = 0.8
+
+# ---------------------------------------------------------------------------
+# [bans] — forbidden crates
+# ---------------------------------------------------------------------------
+[bans]
+# Warn on multiple versions of the same crate in the dependency graph.
+multiple-versions = "warn"
+
+# Warn on wildcard (`*`) version requirements in Cargo.toml.
+wildcards = "warn"
+
+# Deny HTTP/TLS clients and async runtimes.
+# Rationale: the enterprise build must make zero network syscalls from the rtk
+# binary itself. These crates are the surface through which egress is possible.
+#
+# NOT banned (intentional carve-outs):
+#   rusqlite, libsqlite3-sys — the local-only SQLite tracking DB depends on them.
+#   socket2, mio            — low-level primitives; benign transitive (no HTTP).
+deny = [
+    # HTTP clients
+    { name = "ureq" },
+    { name = "reqwest" },
+    { name = "hyper" },
+    { name = "isahc" },
+    { name = "curl" },
+    { name = "surf" },
+    { name = "attohttpc" },
+    { name = "minreq" },
+    { name = "awc" },
+
+    # Async runtimes (also pull in TCP machinery)
+    { name = "tokio" },
+    { name = "async-std" },
+    { name = "smol" },
+
+    # TLS backends
+    { name = "native-tls" },
+    { name = "openssl" },
+    { name = "rustls" },
+    { name = "hyper-tls" },
+    { name = "hyper-rustls" },
+
+    # Error/event reporting (egress)
+    { name = "sentry" },
+
+    # WebSocket / QUIC / HTTP2/3
+    { name = "tungstenite" },
+    { name = "quinn" },
+    { name = "h2" },
+    { name = "h3" },
+
+    # DNS resolvers
+    { name = "trust-dns" },
+    { name = "hickory-resolver" },
+]
+
+# ---------------------------------------------------------------------------
+# [sources] — registry and git source policy (vendored / offline build)
+# ---------------------------------------------------------------------------
+[sources]
+# Permit the standard crates.io registry (used by staging to resolve and vendor).
+# In the enterprise box the cargo vendor lockfile + --offline flag prevents
+# any actual network access; this section just declares what sources are valid
+# to appear in Cargo.lock.
+unknown-registry = "deny"
+unknown-git = "deny"
+
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# No git sources expected in the enterprise build.
+# If a dependency requires a git source, add it here explicitly:
+# allow-git = ["https://github.com/org/repo"]
