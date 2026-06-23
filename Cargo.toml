@@ -14,8 +14,7 @@ categories = ["command-line-utilities", "development-tools"]
 
 [features]
 default = []
-# Phase 2 will make ureq/getrandom optional and gate telemetry code behind this feature.
-# For now the entries are declared but ureq/getrandom remain non-optional deps.
+# ureq/getrandom are optional — compiled only when the 'telemetry' feature is active.
 telemetry = ["dep:ureq", "dep:getrandom"]
 enterprise = []
 

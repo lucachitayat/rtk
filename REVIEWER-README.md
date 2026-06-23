@@ -133,6 +133,15 @@ All commands must complete successfully (exit 0) inside the network-deny namespa
 Any attempt to open a socket would produce a `Permission denied` / `EPERM` error
 visible in stderr.
 
+**Note on globally-installed `ccusage`.** The enterprise build gates the
+`npx --yes ccusage` fallback (`src/analytics/ccusage.rs:99–101`), but will still
+invoke a globally-installed `ccusage` binary if one is found in PATH
+(`ccusage.rs:88–95` — `binary_exists()` runs before the enterprise gate). `ccusage`
+reads local Claude Code session files only and makes no network calls. If the sandbox
+output shows a `ccusage` subprocess spawning during `rtk gain`, this is expected and
+harmless: it is a local file read, not a network connection. The sandbox test still
+confirms RTK itself opens no sockets.
+
 ### Step 7 — Auto-approval is off
 
 The enterprise binary never emits `permissionDecision: "allow"` in its hook response,
