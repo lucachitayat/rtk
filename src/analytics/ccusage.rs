@@ -95,6 +95,11 @@ fn build_command() -> Option<Command> {
         return Some(resolved_command("ccusage"));
     }
 
+    // Enterprise builds must not auto-fetch from the npm registry; skip npx fallback.
+    if cfg!(feature = "enterprise") {
+        return None;
+    }
+
     // Fallback: try npx
     eprintln!("[info] ccusage not installed globally, fetching via npx...");
     let npx_check = resolved_command("npx")

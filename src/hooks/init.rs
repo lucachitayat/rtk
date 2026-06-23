@@ -326,6 +326,7 @@ pub fn run(
     }
 
     if !dry_run {
+        #[cfg(feature = "telemetry")]
         prompt_telemetry_consent()?;
     }
 
@@ -446,6 +447,7 @@ fn prompt_user_consent(settings_path: &Path) -> Result<bool> {
     Ok(response == "y" || response == "yes")
 }
 
+#[cfg(feature = "telemetry")]
 pub fn save_telemetry_consent(accepted: bool) -> Result<()> {
     let mut config = crate::core::config::Config::load().unwrap_or_default();
     config.telemetry.consent_given = Some(accepted);
@@ -456,6 +458,7 @@ pub fn save_telemetry_consent(accepted: bool) -> Result<()> {
         .context("Failed to save telemetry consent to config.toml")
 }
 
+#[cfg(feature = "telemetry")]
 fn prompt_telemetry_consent() -> Result<()> {
     use std::io::{self, BufRead, IsTerminal};
 

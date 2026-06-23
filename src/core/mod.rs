@@ -8,7 +8,9 @@ pub mod filter;
 pub mod runner;
 pub mod stream;
 pub mod tee;
+#[cfg(feature = "telemetry")]
 pub mod telemetry;
+#[cfg(feature = "telemetry")]
 pub mod telemetry_cmd;
 pub mod toml_filter;
 pub mod tracking;

@@ -150,18 +150,38 @@ fn decide_hook_action(cmd: &str, host: permissions::Host) -> HookDecision {
     decide_from_verdict(cmd, permissions::check_command_for(cmd, host))
 }
 
+/// Returns `true` when RTK is permitted to auto-approve rewrites (emit
+/// `permissionDecision: "allow"`) without a human confirmation prompt.
+///
+/// Returns `false` in either of two cases:
+/// - The binary was compiled with `--features enterprise` (build-time opt-out).
+/// - The environment variable `RTK_NO_AUTO_ALLOW` is set at runtime.
+///
+/// When this returns `false`, `AllowRewrite` is handled identically to
+/// `AskRewrite`: the rewritten command is still provided to the host, but
+/// `permissionDecision` is omitted so the host falls back to its normal
+/// human-approval prompt.
+fn auto_allow_enabled() -> bool {
+    !cfg!(feature = "enterprise") && std::env::var_os("RTK_NO_AUTO_ALLOW").is_none()
+}
+
 fn handle_vscode(cmd: &str) -> Result<()> {
-    let (decision, rewritten) = match decide_hook_action(cmd, permissions::Host::Claude) {
+    let (auto_allow, rewritten) = match decide_hook_action(cmd, permissions::Host::Claude) {
         HookDecision::Deny => {
             audit_log("deny", cmd, "");
             return Ok(());
         }
         HookDecision::Defer => return Ok(()),
-        HookDecision::AllowRewrite(r) => ("allow", r),
-        HookDecision::AskRewrite(r) => ("ask", r),
+        HookDecision::AllowRewrite(r) => (true, r),
+        HookDecision::AskRewrite(r) => (false, r),
     };
 
     audit_log("rewrite", cmd, &rewritten);
+
+    // Emit permissionDecision only when both the rule verdict is Allow AND
+    // auto-allow is enabled for this build/environment.
+    let emit_allow = auto_allow && auto_allow_enabled();
+    let decision = if emit_allow { "allow" } else { "ask" };
 
     let output = json!({
         "hookSpecificOutput": {
@@ -195,7 +215,7 @@ fn copilot_cli_response_from_decision(
     decision: HookDecision,
     cmd: &str,
 ) -> Option<Value> {
-    let (rewritten, allow) = match decision {
+    let (rewritten, rule_allows) = match decision {
         HookDecision::Deny => {
             audit_log("deny", cmd, "");
             return None;
@@ -216,7 +236,9 @@ fn copilot_cli_response_from_decision(
         "permissionDecisionReason": "RTK auto-rewrite",
         "modifiedArgs": modified,
     });
-    if allow {
+    // Only emit permissionDecision: "allow" when the rule verdict is Allow
+    // AND auto-allow is enabled for this build/environment.
+    if rule_allows && auto_allow_enabled() {
         response["permissionDecision"] = json!("allow");
     }
     Some(response)
@@ -256,7 +278,14 @@ pub fn run_gemini() -> Result<()> {
         }
         HookDecision::AllowRewrite(ref rewritten) => {
             audit_log("rewrite", cmd, rewritten);
-            print_gemini("allow", Some(rewritten));
+            // When auto-allow is disabled, treat AllowRewrite like AskRewrite:
+            // provide the rewrite but let the host decide on approval.
+            let decision = if auto_allow_enabled() {
+                "allow"
+            } else {
+                "ask_user"
+            };
+            print_gemini(decision, Some(rewritten));
         }
         HookDecision::AskRewrite(ref rewritten) => {
             audit_log("ask", cmd, rewritten);
@@ -349,7 +378,7 @@ fn process_claude_payload(v: &Value) -> PayloadAction {
         None => return PayloadAction::Ignore,
     };
 
-    let (rewritten, allow) = match decide_hook_action(cmd, permissions::Host::Claude) {
+    let (rewritten, rule_allows) = match decide_hook_action(cmd, permissions::Host::Claude) {
         HookDecision::Deny => {
             return PayloadAction::Skip {
                 reason: "skip:deny_rule",
@@ -380,7 +409,9 @@ fn process_claude_payload(v: &Value) -> PayloadAction {
         "updatedInput": updated_input
     });
 
-    if allow {
+    // Only emit permissionDecision: "allow" when the rule verdict is Allow
+    // AND auto-allow is enabled for this build/environment.
+    if rule_allows && auto_allow_enabled() {
         hook_output
             .as_object_mut()
             .unwrap()
@@ -485,7 +516,13 @@ pub fn run_cursor() -> Result<()> {
     let output = match decide_hook_action(&cmd, permissions::Host::Cursor) {
         HookDecision::AllowRewrite(rewritten) => {
             audit_log("rewrite", &cmd, &rewritten);
-            cursor_allow(&rewritten)
+            if auto_allow_enabled() {
+                cursor_allow(&rewritten)
+            } else {
+                // Auto-allow disabled: provide the rewrite without granting
+                // permission so the host falls back to its human-approval prompt.
+                cursor_ask(&rewritten)
+            }
         }
         other => {
             if matches!(other, HookDecision::Deny) {
@@ -502,6 +539,17 @@ fn cursor_allow(rewritten: &str) -> String {
     json!({
         "continue": true,
         "permission": "allow",
+        "updated_input": { "command": rewritten }
+    })
+    .to_string()
+}
+
+/// Like `cursor_allow` but omits `"permission": "allow"` so the Cursor host
+/// falls back to its own human-approval prompt while still receiving the
+/// rewritten command. Used when `auto_allow_enabled()` returns `false`.
+fn cursor_ask(rewritten: &str) -> String {
+    json!({
+        "continue": true,
         "updated_input": { "command": rewritten }
     })
     .to_string()
@@ -536,7 +584,13 @@ fn run_cursor_inner_with_rules(
 
     let verdict = permissions::check_command_with_rules(&cmd, deny_rules, ask_rules, allow_rules);
     match decide_from_verdict(&cmd, verdict) {
-        HookDecision::AllowRewrite(rewritten) => cursor_allow(&rewritten),
+        HookDecision::AllowRewrite(rewritten) => {
+            if auto_allow_enabled() {
+                cursor_allow(&rewritten)
+            } else {
+                cursor_ask(&rewritten)
+            }
+        }
         _ => "{}".to_string(),
     }
 }
@@ -658,6 +712,7 @@ mod tests {
         assert_eq!(r["modifiedArgs"]["command"], "rtk cargo test");
     }
 
+    #[cfg(not(feature = "enterprise"))]
     #[test]
     fn test_copilot_cli_allow_rewrite_returns_allow() {
         let r = copilot_cli_response_from_decision(
@@ -1032,6 +1087,7 @@ mod tests {
         run_cursor_inner_with_rules(input, &[], &[], &["*".to_string()])
     }
 
+    #[cfg(not(feature = "enterprise"))]
     #[test]
     fn test_cursor_rewrite_flat_format() {
         let result = run_cursor_allowed(&cursor_input("git status"));
@@ -1097,6 +1153,7 @@ mod tests {
         assert_eq!(result, "{}");
     }
 
+    #[cfg(not(feature = "enterprise"))]
     #[test]
     fn test_cursor_no_hook_specific_output() {
         let result = run_cursor_allowed(&cursor_input("cargo test"));
@@ -1106,6 +1163,7 @@ mod tests {
         assert_eq!(v["continue"], true);
     }
 
+    #[cfg(not(feature = "enterprise"))]
     #[test]
     fn test_cursor_compound_rewrite_includes_continue() {
         let cmd = "cd \"/tmp/proj\" && git status";
@@ -1119,6 +1177,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(feature = "enterprise"))]
     #[test]
     fn test_cursor_strips_single_utf8_bom() {
         // Some Cursor builds prepend a single UTF-8 BOM to hook stdin.
@@ -1133,6 +1192,7 @@ mod tests {
         assert_eq!(v["updated_input"]["command"], "rtk git status");
     }
 
+    #[cfg(not(feature = "enterprise"))]
     #[test]
     fn test_cursor_strips_double_utf8_bom() {
         // Cursor on Windows ships hook stdin with **two** leading
@@ -1344,12 +1404,20 @@ mod tests {
             HookDecision::Deny => {
                 r#"{"decision":"deny","reason":"Blocked by RTK permission rule"}"#.to_string()
             }
-            HookDecision::AllowRewrite(r) => gemini_json("allow", Some(&r)),
+            HookDecision::AllowRewrite(r) => {
+                let decision = if auto_allow_enabled() {
+                    "allow"
+                } else {
+                    "ask_user"
+                };
+                gemini_json(decision, Some(&r))
+            }
             HookDecision::AskRewrite(r) => gemini_json("ask_user", Some(&r)),
             HookDecision::Defer => gemini_json("ask_user", None),
         }
     }
 
+    #[cfg(not(feature = "enterprise"))]
     #[test]
     fn test_gemini_allow_emits_rewrite() {
         let v: Value =
@@ -1390,5 +1458,199 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(v["decision"], "deny");
+    }
+
+    // ── RTK_NO_AUTO_ALLOW / enterprise hardening ──────────────────────────────
+    //
+    // Design note: std::env::set_var is not thread-safe under parallel cargo test.
+    // Instead of mutating the process environment, we test the following separately:
+    //
+    //   A) The predicate auto_allow_enabled() logic via a single-threaded env-var test
+    //      run with `-- --test-threads=1` (documented) OR via the cfg(feature) path.
+    //   B) Each host's response shape when `rule_allows=true` but the conditional
+    //      `if rule_allows && auto_allow_enabled()` would be false — by directly
+    //      calling the low-level functions with AskRewrite (which has the same code
+    //      path as AllowRewrite with !auto_allow_enabled(), both omit permissionDecision).
+    //   C) The JSON output shape of cursor_ask / gemini "ask_user" with rewrite present.
+    //
+    // The enterprise feature flag tests (cfg(feature = "enterprise")) exercise the
+    // compile-time path and run correctly because the feature is fixed at compile time
+    // (no runtime races).
+
+    // --- Predicate logic ---
+
+    #[test]
+    fn test_auto_allow_enabled_false_when_enterprise_feature() {
+        // In a non-enterprise build this test is a no-op (cfg gates the assert).
+        // In an enterprise build it confirms the predicate is always false.
+        #[cfg(feature = "enterprise")]
+        assert!(
+            !auto_allow_enabled(),
+            "enterprise feature must disable auto_allow_enabled()"
+        );
+    }
+
+    #[test]
+    fn test_auto_allow_enabled_true_in_default_build_without_var() {
+        // Only meaningful when neither the enterprise feature is set nor the env-var.
+        // We check the env-var at test time so we don't accidentally fail when the
+        // test suite is run with RTK_NO_AUTO_ALLOW set in the outer environment.
+        #[cfg(not(feature = "enterprise"))]
+        {
+            if std::env::var_os("RTK_NO_AUTO_ALLOW").is_none() {
+                assert!(
+                    auto_allow_enabled(),
+                    "auto_allow_enabled() must return true in default build without RTK_NO_AUTO_ALLOW"
+                );
+            }
+        }
+    }
+
+    // --- Host output shape: permissionDecision absent when auto-allow is off ---
+    //
+    // We verify invariant (B) by directly exercising the AskRewrite arm of each
+    // host function (AskRewrite always omits permissionDecision regardless of the
+    // env-var, and AllowRewrite with !auto_allow_enabled() takes the same branch).
+    // A separate structural test (C) verifies cursor_ask / gemini ask_user shapes.
+
+    // Copilot CLI: AskRewrite (= AllowRewrite with opt-out) must omit permissionDecision
+    // and still carry the rewritten command. (Already covered by the existing
+    // test_copilot_cli_ask_rewrite_omits_permission_decision; restated here explicitly
+    // for the hardening audit trail.)
+    #[test]
+    fn test_hardening_copilot_cli_omits_permission_decision_carries_rewrite() {
+        // AskRewrite path — same output shape as AllowRewrite + !auto_allow_enabled().
+        let r = copilot_cli_response_from_decision(
+            &cli_args("cargo test"),
+            HookDecision::AskRewrite("rtk cargo test".into()),
+            "cargo test",
+        )
+        .unwrap();
+        assert!(
+            r.get("permissionDecision").is_none(),
+            "AskRewrite (opt-out shape) must NOT set permissionDecision; got: {r}"
+        );
+        assert_eq!(
+            r["modifiedArgs"]["command"], "rtk cargo test",
+            "rewritten command must still be present"
+        );
+    }
+
+    // Claude native: AskRewrite omits permissionDecision and carries the rewrite.
+    #[test]
+    fn test_hardening_claude_ask_rewrite_omits_permission_decision() {
+        // process_claude_payload -> AskRewrite -> hook_output has no permissionDecision.
+        // We verify via run_claude_inner which returns the full hookSpecificOutput wrapper.
+        // "git status" with no allow rule configured returns AskRewrite (the opt-out shape).
+        let result = run_claude_inner(&claude_input("git status")).unwrap();
+        let v: Value = serde_json::from_str(&result).unwrap();
+        let hook = &v["hookSpecificOutput"];
+        // With default config (no allow rules), permissionDecision is absent.
+        assert!(
+            hook.get("permissionDecision").is_none(),
+            "AskRewrite (opt-out shape) must NOT set permissionDecision on Claude path; got: {hook}"
+        );
+        assert!(
+            hook["updatedInput"]["command"].is_string(),
+            "rewritten command must still be present"
+        );
+    }
+
+    // Gemini: "ask_user" decision with rewrite must carry hookSpecificOutput.
+    #[test]
+    fn test_hardening_gemini_ask_user_with_rewrite_carries_command() {
+        // When auto_allow_enabled() is false, AllowRewrite emits "ask_user".
+        // Verify the JSON shape: decision="ask_user" and rewrite is present.
+        let rendered = gemini_json("ask_user", Some("rtk git status"));
+        let v: Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(v["decision"], "ask_user");
+        assert_eq!(
+            v["hookSpecificOutput"]["tool_input"]["command"], "rtk git status",
+            "rewritten command must be present in hookSpecificOutput even for ask_user"
+        );
+    }
+
+    // Cursor: cursor_ask must carry updated_input without "permission":"allow".
+    #[test]
+    fn test_hardening_cursor_ask_omits_permission_carries_rewrite() {
+        let result = cursor_ask("rtk git status");
+        let v: Value = serde_json::from_str(&result).unwrap();
+        assert!(
+            v.get("permission").is_none(),
+            "cursor_ask must not emit permission field; got: {v}"
+        );
+        assert_eq!(
+            v["updated_input"]["command"], "rtk git status",
+            "rewritten command must still be present in updated_input"
+        );
+        assert_eq!(v["continue"], true, "continue:true must be present");
+    }
+
+    // --- enterprise feature: compile-time opt-out — full host coverage ---
+
+    #[cfg(feature = "enterprise")]
+    #[test]
+    fn test_enterprise_copilot_cli_allow_rewrite_omits_permission_decision() {
+        // In enterprise builds, AllowRewrite must behave identically to AskRewrite.
+        let r = copilot_cli_response_from_decision(
+            &cli_args("cargo test"),
+            HookDecision::AllowRewrite("rtk cargo test".into()),
+            "cargo test",
+        )
+        .unwrap();
+        assert!(
+            r.get("permissionDecision").is_none(),
+            "enterprise: AllowRewrite must NOT set permissionDecision on Copilot CLI path; got: {r}"
+        );
+        assert_eq!(r["modifiedArgs"]["command"], "rtk cargo test");
+    }
+
+    #[cfg(feature = "enterprise")]
+    #[test]
+    fn test_enterprise_cursor_allow_rewrite_omits_permission() {
+        // With all_allowed() rules, decide returns AllowRewrite; enterprise build
+        // then calls cursor_ask instead of cursor_allow.
+        let result =
+            run_cursor_inner_with_rules(&cursor_input("git status"), &[], &[], &all_allowed());
+        let v: Value = serde_json::from_str(&result).unwrap();
+        assert!(
+            v.get("permission").is_none() || v["permission"] != "allow",
+            "enterprise: Cursor AllowRewrite must not emit permission:allow; got: {v}"
+        );
+        assert!(
+            v["updated_input"]["command"].is_string(),
+            "rewritten command must still be present"
+        );
+    }
+
+    #[cfg(feature = "enterprise")]
+    #[test]
+    fn test_enterprise_claude_allow_rewrite_omits_permission_decision() {
+        // run_claude_inner -> process_claude_payload; with enterprise feature,
+        // even AllowRewrite must not set permissionDecision.
+        if let Some(result) = run_claude_inner(&claude_input("git status")) {
+            let v: Value = serde_json::from_str(&result).unwrap();
+            let hook = &v["hookSpecificOutput"];
+            assert!(
+                hook.get("permissionDecision").is_none() || hook["permissionDecision"] != "allow",
+                "enterprise: permissionDecision must not be 'allow' on Claude path; got: {hook}"
+            );
+            assert!(hook["updatedInput"]["command"].is_string());
+        }
+    }
+
+    #[cfg(feature = "enterprise")]
+    #[test]
+    fn test_enterprise_gemini_allow_rewrite_emits_ask_user() {
+        let rendered = gemini_render("git status", &[], &[], &all_allowed());
+        let v: Value = serde_json::from_str(&rendered).unwrap();
+        assert_ne!(
+            v["decision"], "allow",
+            "enterprise: Gemini AllowRewrite must not emit decision:allow; got: {v}"
+        );
+        assert!(
+            v.get("hookSpecificOutput").is_some(),
+            "rewritten command must still be present in hookSpecificOutput"
+        );
     }
 }

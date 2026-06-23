@@ -960,7 +960,10 @@ impl Tracker {
 
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
+}
 
+#[cfg(feature = "telemetry")]
+impl Tracker {
     /// Count commands since a given timestamp (for telemetry).
     pub fn count_commands_since(&self, since: chrono::DateTime<chrono::Utc>) -> Result<i64> {
         let ts = since.format("%Y-%m-%dT%H:%M:%S").to_string();
@@ -1196,6 +1199,7 @@ impl Tracker {
     }
 }
 
+#[cfg(feature = "telemetry")]
 /// Map an rtk_cmd to an ecosystem category for telemetry.
 fn categorize_command(rtk_cmd: &str) -> String {
     let parts: Vec<&str> = rtk_cmd.split_whitespace().collect();

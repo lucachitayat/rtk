@@ -588,6 +588,7 @@ enum Commands {
     Session {},
 
     /// Manage telemetry consent and data (RGPD/GDPR)
+    #[cfg(feature = "telemetry")]
     Telemetry {
         #[command(subcommand)]
         command: core::telemetry_cmd::TelemetrySubcommand,
@@ -1193,6 +1194,7 @@ const RTK_META_COMMANDS: &[&str] = &[
     "untrust",
     "session",
     "rewrite",
+    #[cfg(feature = "telemetry")]
     "telemetry",
     "smart",
     "deps",
@@ -1476,6 +1478,7 @@ where
 
 fn run_cli() -> Result<i32> {
     // Fire-and-forget telemetry ping (1/day, non-blocking)
+    #[cfg(feature = "telemetry")]
     core::telemetry::maybe_ping();
 
     let cli = match Cli::try_parse() {
@@ -2145,6 +2148,7 @@ fn run_cli() -> Result<i32> {
             0
         }
 
+        #[cfg(feature = "telemetry")]
         Commands::Telemetry { command } => {
             core::telemetry_cmd::run(&command)?;
             0

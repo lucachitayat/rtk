@@ -15,6 +15,7 @@ pub struct Config {
     pub filters: FilterConfig,
     #[serde(default)]
     pub tee: crate::core::tee::TeeConfig,
+    #[cfg(feature = "telemetry")]
     #[serde(default)]
     pub telemetry: TelemetryConfig,
     #[serde(default)]
@@ -110,6 +111,7 @@ impl Default for FilterConfig {
     }
 }
 
+#[cfg(feature = "telemetry")]
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct TelemetryConfig {
     pub enabled: bool,
@@ -262,6 +264,7 @@ history_days = 90
         assert!(config.hooks.exclude_commands.is_empty());
     }
 
+    #[cfg(feature = "telemetry")]
     #[test]
     fn test_old_toml_without_consent_fields() {
         let toml = r#"
@@ -274,6 +277,7 @@ enabled = true
         assert!(config.telemetry.consent_date.is_none());
     }
 
+    #[cfg(feature = "telemetry")]
     #[test]
     fn test_telemetry_default_disabled() {
         let config = Config::default();
@@ -281,6 +285,7 @@ enabled = true
         assert!(config.telemetry.consent_given.is_none());
     }
 
+    #[cfg(feature = "telemetry")]
     #[test]
     fn test_telemetry_consent_roundtrip() {
         let toml = r#"

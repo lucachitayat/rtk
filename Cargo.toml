@@ -12,6 +12,13 @@ readme = "README.md"
 keywords = ["cli", "llm", "token", "filter", "productivity"]
 categories = ["command-line-utilities", "development-tools"]
 
+[features]
+default = []
+# Phase 2 will make ureq/getrandom optional and gate telemetry code behind this feature.
+# For now the entries are declared but ureq/getrandom remain non-optional deps.
+telemetry = ["dep:ureq", "dep:getrandom"]
+enterprise = []
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 anyhow = "1.0"
@@ -28,8 +35,8 @@ toml = "0.8"
 chrono = "0.4"
 tempfile = "3"
 sha2 = "0.10"
-ureq = "2"
-getrandom = "0.4"
+ureq = { version = "2", optional = true }
+getrandom = { version = "0.4", optional = true }
 flate2 = "1.0"
 quick-xml = "0.37"
 which = "8"
