@@ -55,14 +55,18 @@ process, and any command that RTK passes through to the underlying tool (e.g.,
 
 ## 3. Residual Risk and Caveats
 
-**Egress claim is scoped to the `rtk` binary.** The control matrix above proves
-that the `rtk` binary itself makes no network syscalls and links no HTTP client.
-One RTK subcommand, `rtk gain`, may auto-spawn `npx --yes ccusage` as a
-fallback for Claude Code usage analytics (`src/analytics/ccusage.rs`). The
-`npx` process is not the `rtk` binary and can reach npm registries. In
-environments where any child process making network calls is unacceptable, this
-fallback must be gated off (compile-time or runtime). The network-namespace test
-should be run against the full `rtk gain` invocation to confirm the extent.
+**Egress claim: RTK initiates no network connection.** The control matrix above
+proves the `rtk` binary itself makes no network syscalls and links no HTTP
+client. The only process RTK previously spawned on its own initiative that could
+reach the network — the `npx --yes ccusage` fallback in `rtk gain`
+(`src/analytics/ccusage.rs`) — is **gated off at compile time in the enterprise
+build**: under the `enterprise` feature `build_command()` returns early and never
+spawns `npx` (`rtk gain` still functions, just without ccusage data). The
+default/non-enterprise build retains the fallback. Commands the developer
+explicitly runs *through* RTK (e.g. `rtk curl`, `rtk gh`) remain out of scope per
+§1 — RTK compresses their output, it does not initiate or sandbox them. The
+network-namespace test should still be run against the full `rtk gain` invocation
+as confirmation.
 
 **Staging machine trust.** The `Cargo.lock`, vendored sources, and SBOM are
 generated on the staging machine. The security claim depends on the staging
