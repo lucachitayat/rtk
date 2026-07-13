@@ -654,8 +654,11 @@ mod tests {
     fn collect_matches_finds_known_source_file() {
         let files = collect_matches("src", "*.rs", false, false, None);
         assert!(!files.is_empty());
+        // Normalize separators: the walk emits native paths (`\` on Windows).
         assert!(
-            files.contains(&"cmds/system/find_cmd.rs".to_string()),
+            files
+                .iter()
+                .any(|f| f.replace('\\', "/") == "cmds/system/find_cmd.rs"),
             "expected to find this very file; got {} entries",
             files.len()
         );
@@ -742,13 +745,15 @@ mod tests {
         let shallow = collect_matches("src", "*.rs", false, false, Some(1));
         assert!(!shallow.is_empty(), "expected at least one top-level .rs in src");
         assert!(
-            shallow.iter().all(|f| !f.contains('/')),
+            shallow
+                .iter()
+                .all(|f| !f.contains(std::path::MAIN_SEPARATOR)),
             "maxdepth=1 returned nested paths"
         );
         // Without the bound, nested files appear.
         let deep = collect_matches("src", "*.rs", false, false, None);
         assert!(
-            deep.iter().any(|f| f.contains('/')),
+            deep.iter().any(|f| f.contains(std::path::MAIN_SEPARATOR)),
             "expected nested paths without maxdepth"
         );
     }

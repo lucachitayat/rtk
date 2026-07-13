@@ -79,9 +79,10 @@ inv_grep   "build_parallel" "src/cmds/system/find_cmd.rs" "find parallel-walk pe
 inv_exists "src/core/args_utils.rs"                    "args_utils (-- restoration) present"
 inv_exists "FORK_NOTES.md"                             "FORK_NOTES.md present"
 # Conflict markers in src/ AND the canonical version files — quiet (-l), never dump matches.
-# (CHANGELOG.md is excluded: merge=union can leave `=======` setext-heading lines that the
-# 7-char marker regex would false-positive on.)
-if grep -rlqE '^(<{7}|={7}|>{7})' src/ Cargo.toml Cargo.lock .release-please-manifest.json 2>/dev/null; then fail "conflict markers present in src/ or version files"; RC=1; else pass "no conflict markers in src/ or version files"; fi
+# Match ONLY the unambiguous `<<<<<<<` / `>>>>>>>` markers, never bare `=======`: a real git
+# conflict always carries the angle-bracket pair, whereas `=======` also appears as a legit
+# setext-heading / decorative separator in source & docs (false-positived here on 2026-07-12).
+if grep -rlqE '^(<{7}|>{7})' src/ Cargo.toml Cargo.lock .release-please-manifest.json 2>/dev/null; then fail "conflict markers present in src/ or version files"; RC=1; else pass "no conflict markers in src/ or version files"; fi
 # Fork version marker — the §5 base-version check strips '-fork.N', so assert it survives here.
 if grep -m1 '^version' Cargo.toml | grep -qF -- '-fork'; then pass "Cargo.toml version carries -fork marker"; else fail "Cargo.toml lost -fork version suffix"; RC=1; fi
 echo
@@ -145,7 +146,8 @@ fi
 # Cross-file version consistency — reconcile MUST keep the three canonical sites in lockstep.
 # This is the hard guarantee (the base check above stays a WARN to tolerate deferred forks).
 manifest_ver=$(grep -oE '"\." *: *"[^"]*"' .release-please-manifest.json 2>/dev/null | sed -E 's/.*"([^"]*)" *$/\1/')
-lock_ver=$(perl -0777 -ne 'print $1 if /\[\[package\]\]\nname = "rtk"\nversion = "([^"]*)"/' Cargo.lock 2>/dev/null)
+# `\r?` before each newline: tolerate CRLF Cargo.lock on Windows checkouts (else lock_ver=<none>).
+lock_ver=$(perl -0777 -ne 'print $1 if /\[\[package\]\]\r?\nname = "rtk"\r?\nversion = "([^"]*)"/' Cargo.lock 2>/dev/null)
 if [ "$fork_ver" = "$manifest_ver" ] && [ "$fork_ver" = "$lock_ver" ]; then
   case "$fork_ver" in
     *-dev-fork.*) pass "version consistent + fork-marked across Cargo.toml, manifest, Cargo.lock ($fork_ver)" ;;
