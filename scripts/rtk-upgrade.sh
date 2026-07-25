@@ -212,10 +212,20 @@ cmd_apply() {
     git fetch upstream develop 2>&1 | tail -3 || true
   fi
 
-  # Refuse to entangle a merge with uncommitted work.
-  if [ -n "$(git status --porcelain)" ]; then
-    fail "working tree not clean — commit or stash first. Tree untouched."
+  # Refuse to entangle a merge with uncommitted TRACKED work (modified or staged).
+  # Untracked files are deliberately NOT a blocker: git will not merge into them, and the
+  # abort path's reset cannot clobber them, so gating on them is strictly too tight — a stray
+  # agent worktree under .claude/worktrees/ once refused an otherwise-clean apply. Warn only.
+  if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+    fail "tracked changes present (modified or staged) — commit or stash first. Tree untouched."
+    git status --short --untracked-files=no | head -20 | sed 's/^/      /'
     exit 1
+  fi
+  local untracked
+  untracked=$(git ls-files --others --exclude-standard 2>/dev/null | head -5)
+  if [ -n "$untracked" ]; then
+    warn "  ⚠ untracked files present — not a blocker (they cannot conflict with the merge):"
+    printf '%s\n' "$untracked" | sed 's/^/      /'
   fi
 
   # Read-only preview at merge time — ADVISORY only. merge-tree --name-only does not cleanly
