@@ -62,7 +62,33 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+
+      # ~30 assertions across 5 files in tests/ sit behind an `rg_available()` guard and
+      # return early when ripgrep is missing — a skip that `cargo test` reports as a pass.
+      # Neither the ubuntu-24.04/26.04 nor the macos-15 runner image lists ripgrep in its
+      # installed-software manifest, so those assertions have never actually run in CI.
+      # Install it, and set RTK_REQUIRE_RG so the guard panics rather than skipping if a
+      # future runner image or PATH change silently removes it again.
+      #
+      # Windows is deliberately left WITHOUT rg and WITHOUT RTK_REQUIRE_RG:
+      # tests/guard_integration_test.rs is the only file in tests/ with no `#![cfg(unix)]`,
+      # so it compiles there, and its rg guard is the only thing stopping a `grep`-dependent
+      # test from running on a runner that has no `grep`.
+      - name: Install ripgrep (unix legs only)
+        if: runner.os != 'Windows'
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update -qq && sudo apt-get install -y ripgrep
+          else
+            brew install ripgrep
+          fi
+          rg --version
+
       - run: cargo test --all
+        env:
+          # Empty on Windows by design — the guard treats only the exact value "1" as
+          # "ripgrep is required here", so an empty value is the same as unset.
+          RTK_REQUIRE_RG: ${{ runner.os != 'Windows' && '1' || '' }}
 
   security:
     name: Security Scan
@@ -119,7 +145,13 @@ jobs:
       - name: Dangerous patterns scan
         run: |
           echo "### Dangerous Code Patterns" >> $GITHUB_STEP_SUMMARY
-          PATTERNS=$(git diff origin/master...HEAD | grep -E "Command::new\(\"sh\"|Command::new\(\"bash\"|\.env\(\"LD_PRELOAD|\.env\(\"PATH|reqwest::|std::net::|TcpStream|UdpSocket|unsafe \{|\.unwrap\(\) |panic!\(|todo!\(|unimplemented!\(" || true)
+          # `ureq` is in this alternation because it is the fork's ACTUAL HTTP client
+          # (build.rs lists it first in FORBIDDEN_CRATES, and the enterprise export exists
+          # to remove it). The list matched reqwest/std::net/TcpStream/UdpSocket and omitted
+          # the one crate this repo really links against, so the egress scan could not see a
+          # re-introduced ureq call or dependency line. Bare `ureq`, not `ureq::`, so the
+          # Cargo.toml dependency line is matched too.
+          PATTERNS=$(git diff origin/master...HEAD | grep -E "Command::new\(\"sh\"|Command::new\(\"bash\"|\.env\(\"LD_PRELOAD|\.env\(\"PATH|ureq|reqwest::|std::net::|TcpStream|UdpSocket|unsafe \{|\.unwrap\(\) |panic!\(|todo!\(|unimplemented!\(" || true)
           if [ -n "$PATTERNS" ]; then
             echo "**Potentially dangerous patterns detected:**" >> $GITHUB_STEP_SUMMARY
             echo '```diff' >> $GITHUB_STEP_SUMMARY
@@ -129,7 +161,10 @@ jobs:
             echo "**Security Concerns:**" >> $GITHUB_STEP_SUMMARY
             echo "$PATTERNS" | grep -q "Command::new" && echo "- Shell command execution detected" >> $GITHUB_STEP_SUMMARY || true
             echo "$PATTERNS" | grep -q "\.env\(\"" && echo "- Environment variable manipulation" >> $GITHUB_STEP_SUMMARY || true
-            echo "$PATTERNS" | grep -q "reqwest::\|std::net::\|TcpStream\|UdpSocket" && echo "- Network operations added" >> $GITHUB_STEP_SUMMARY || true
+            # Must mirror the alternation above, ureq included — otherwise a ureq hit is
+            # matched but never named in the summary, and the reviewer sees "patterns
+            # detected" with no network bullet.
+            echo "$PATTERNS" | grep -q "ureq\|reqwest::\|std::net::\|TcpStream\|UdpSocket" && echo "- Network operations added" >> $GITHUB_STEP_SUMMARY || true
             echo "$PATTERNS" | grep -q "unsafe" && echo "- Unsafe code blocks" >> $GITHUB_STEP_SUMMARY || true
             echo "$PATTERNS" | grep -q "\.unwrap\(\)\|panic!\(" && echo "- Panic-inducing code" >> $GITHUB_STEP_SUMMARY || true
             echo "::warning::Dangerous code patterns detected - manual review required"

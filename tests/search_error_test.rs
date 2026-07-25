@@ -22,12 +22,27 @@ fn grep_exit(args: &[&str]) -> Option<i32> {
         .code()
 }
 
+/// `true` when a real `rg` is on PATH.
+///
+/// Every test that compares rtk's output against real ripgrep guards on this and returns
+/// early without it — a skip `cargo test` reports as a pass. CI installed no ripgrep, and
+/// no runner image ships it, so ~30 such assertions across tests/ never ran there.
+/// `RTK_REQUIRE_RG=1` (set on the unix legs of the CI `test` job) makes the skip fatal
+/// instead of silent. Instrumented here at the definition, not at the call sites: two
+/// callers use the inverse `if rg_available() { … }` shape with no `return` to instrument.
 fn rg_available() -> bool {
-    Command::new("rg")
+    let found = Command::new("rg")
         .arg("--version")
         .output()
         .map(|o| o.status.success())
-        .unwrap_or(false)
+        .unwrap_or(false);
+    assert!(
+        found || std::env::var("RTK_REQUIRE_RG").as_deref() != Ok("1"),
+        "RTK_REQUIRE_RG=1 but `rg` is not on PATH: {} would skip silently and report a \
+         pass for assertions that never ran",
+        file!()
+    );
+    found
 }
 
 fn write_temp(content: &str) -> (tempfile::TempDir, String) {
