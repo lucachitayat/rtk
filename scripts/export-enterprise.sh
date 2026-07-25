@@ -597,7 +597,12 @@ if ! command -v rg &>/dev/null; then
     echo "       Install with: cargo install ripgrep  OR  brew install ripgrep" >&2
     exit 1
 fi
-GREP_HIT="$(rg -rniE 'telemetry|maybe_ping|ureq|TelemetryConfig|getrandom' "${OUT_DIR}/src/" 2>/dev/null || true)"
+# NOT `-rniE`: those are grep's flags. In ripgrep `-r` is --replace and swallows the next
+# token, so `-rniE` meant "replace every match with the literal niE" — losing -n (line
+# numbers) and -i (case-insensitivity), and printing `niE` in place of the offending text.
+# On 2026-07-24 that reported `constants.rs: "niE",` for a residual `"telemetry",`, hiding
+# the actual cause. Recursion is implicit when the argument is a directory.
+GREP_HIT="$(rg -n -i 'telemetry|maybe_ping|ureq|TelemetryConfig|getrandom' "${OUT_DIR}/src/" 2>/dev/null || true)"
 if [[ -n "${GREP_HIT}" ]]; then
     echo "FATAL: residual references found under src/:" >&2
     echo "${GREP_HIT}" >&2

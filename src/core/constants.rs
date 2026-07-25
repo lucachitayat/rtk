@@ -24,6 +24,11 @@ pub const RTK_META_COMMANDS: &[&str] = &[
     "untrust",
     "session",
     "rewrite",
+    // Gated so `scripts/export-enterprise.sh` step 2b strips it with the rest of the
+    // telemetry surface. The fork's previous copy of this list (in main.rs, before upstream
+    // moved it here) carried the same attribute; without it the bare string survives the
+    // export and trips the step 6a residual scan.
+    #[cfg(feature = "telemetry")]
     "telemetry",
     "smart",
     "deps",
