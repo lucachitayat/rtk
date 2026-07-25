@@ -19,7 +19,11 @@
 set -uo pipefail   # NOT -e: run every check and report, don't bail on first failure
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$REPO_ROOT"
+# `|| exit` is not cosmetic here. Every check below is a relative path, so a cd that failed
+# would run the whole gate against whatever directory the caller happened to be in — and the
+# fork-invariant checks would report on files that are not this repo's. Fail rather than
+# verify the wrong tree.
+cd "$REPO_ROOT" || { echo "FATAL: cannot cd to repo root '$REPO_ROOT'" >&2; exit 1; }
 
 bold()  { printf "\033[1m%s\033[0m\n" "$*"; }
 dim()   { printf "\033[2m%s\033[0m\n" "$*"; }
