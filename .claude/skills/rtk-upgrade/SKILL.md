@@ -76,6 +76,12 @@ pull+reinstall. All that determinism lives in the scripts, so it never has to li
    the printed `next:` command (`apply`) **once**. Render its `✓`/`✗` checklist.
    - If `check` showed the merge preview as unavailable (`?` / git < 2.38), ask one confirm
      question before running `apply` (the conflict signal is degraded).
+   - `check` reports three separate divergences: `develop` vs `upstream/develop` (sync-source
+     bookkeeping), `HEAD` vs `upstream/develop` (what the merge brings in — the decision input),
+     and the branch vs `origin/<branch>` (the fork's own remote). A `⚠ STALE BASE` block means
+     `apply` will refuse; report it and stop — the user integrates with `git pull --ff-only` (or
+     `--rebase`), never you. Merging onto a stale base duplicates landed work and the push is
+     rejected after every gate has already passed.
 5. **If `apply` reports an aborted merge** → STOP and report the conflict list verbatim. Do NOT
    inspect files or resolve by hand — `apply` already restored the tree. Wait for the user.
    - **If the user then says to resolve them**, the sanctioned route back onto the golden path is:
