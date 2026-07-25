@@ -27,10 +27,27 @@ check() { # check <description> <result(0=ok)>
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-export GIT_DIR="$TMP/.git" GIT_WORK_TREE="$TMP"
+# `cd` into the fixture repo rather than exporting GIT_DIR / GIT_WORK_TREE. Those two are
+# inherited by every child process and, if a sibling fixture is ever SOURCED from the same
+# shell instead of run as a subprocess, they would silently redirect that fixture's — or the
+# gate's own — git commands at this throwaway repo.
+cd "$TMP"
 git init -q
 git config user.email t@t.t
 git config user.name t
+# This machine has commit.gpgsign=true globally; a runner without a signing key would abort
+# every commit below and the fixture would fail for a reason having nothing to do with the
+# detector under test.
+git config commit.gpgsign false
+# DOMAIN CONTROL: prove the fixture is operating on the throwaway repo and not on the real
+# one. Everything below commits, merges and branches freely, so a `git init` that silently
+# did not take effect must abort rather than run against the working tree. `pwd -P` on both
+# sides because macOS mktemp hands back a /var symlink into /private/var.
+fixture_root="$(cd "$(git rev-parse --show-toplevel)" && pwd -P)"
+if [ "$fixture_root" != "$(cd "$TMP" && pwd -P)" ]; then
+  echo "FATAL: fixture git root is '$fixture_root', expected '$TMP' — refusing to run" >&2
+  exit 1
+fi
 
 commit() { # commit <subject> [body] ; each touches a UNIQUE file (mktemp) so
            # branches never conflict and subshell ($(commit ...)) calls stay distinct.
