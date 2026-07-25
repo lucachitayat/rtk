@@ -79,9 +79,12 @@ inv_grep   "build_parallel" "src/cmds/system/find_cmd.rs" "find parallel-walk pe
 inv_exists "src/core/args_utils.rs"                    "args_utils (-- restoration) present"
 inv_exists "FORK_NOTES.md"                             "FORK_NOTES.md present"
 # Conflict markers in src/ AND the canonical version files — quiet (-l), never dump matches.
-# (CHANGELOG.md is excluded: merge=union can leave `=======` setext-heading lines that the
-# 7-char marker regex would false-positive on.)
-if grep -rlqE '^(<{7}|={7}|>{7})' src/ Cargo.toml Cargo.lock .release-please-manifest.json 2>/dev/null; then fail "conflict markers present in src/ or version files"; RC=1; else pass "no conflict markers in src/ or version files"; fi
+# Only `<{7}`/`>{7}` are probed: a real conflict always leaves BOTH, so dropping the `={7}`
+# alternative costs no detection power. It is dropped deliberately — `=======` is not unique to
+# conflicts, and matching it false-positived on the pytest banner fixture in
+# src/cmds/python/uv_cmd.rs ("===== test session starts =====") as well as on merge=union
+# setext headings in CHANGELOG.md (which is why that file is also excluded here).
+if grep -rlqE '^(<{7}|>{7})' src/ Cargo.toml Cargo.lock .release-please-manifest.json 2>/dev/null; then fail "conflict markers present in src/ or version files"; RC=1; else pass "no conflict markers in src/ or version files"; fi
 # Fork version marker — the §5 base-version check strips '-fork.N', so assert it survives here.
 if grep -m1 '^version' Cargo.toml | grep -qF -- '-fork'; then pass "Cargo.toml version carries -fork marker"; else fail "Cargo.toml lost -fork version suffix"; RC=1; fi
 echo
