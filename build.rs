@@ -2,82 +2,34 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
-// ── Egress guard ─────────────────────────────────────────────────────────────
-// HTTP/TLS clients and async runtimes that must never appear in an enterprise
-// build. Does NOT include rusqlite, libsqlite3-sys, socket2, or mio — those
-// are benign / required.
-const FORBIDDEN_CRATES: &[&str] = &[
-    "ureq",
-    "reqwest",
-    "hyper",
-    "isahc",
-    "curl",
-    "surf",
-    "attohttpc",
-    "minreq",
-    "awc",
-    "tokio",
-    "async-std",
-    "smol",
-    "native-tls",
-    "openssl",
-    "rustls",
-    "hyper-tls",
-    "hyper-rustls",
-    "sentry",
-    "tungstenite",
-    "quinn",
-    "h2",
-    "h3",
-    "trust-dns",
-    "hickory-resolver",
-];
+// FORBIDDEN_CRATES, forbidden_in_lockfile and manifest_declares_telemetry_feature. Kept in a
+// shared file because a `#[cfg(test)] mod tests` inside build.rs NEVER RUNS — the
+// build-script-build target is `test = false`, so the guard's three unit tests appeared 0
+// times in `cargo test --all` (verified 2026-07-24). The same file is `include!`d by
+// tests/egress_guard_test.rs, which is where those tests now live and actually execute.
+include!("build_support/egress_guard.rs");
 
-/// Scan `lock_text` (contents of Cargo.lock) for any forbidden networking
-/// crate.  Returns `Some(name)` for the first hit, `None` if the graph is
-/// clean.  Pure function — easy to unit-test.
+/// Run the egress guard: scan Cargo.lock for the forbidden networking crates, and refuse the
+/// build if any is present.
 ///
-/// Fails closed: a Cargo.lock that cannot be parsed as TOML, or that lacks
-/// the `[[package]]` array a real lockfile always has, panics instead of
-/// reporting "clean". An egress guard that cannot read its input must
-/// refuse, not silently approve.
-fn forbidden_in_lockfile(lock_text: &str) -> Option<String> {
-    let parsed: toml::Value = lock_text
-        .parse()
-        .unwrap_or_else(|e| panic!("EGRESS GUARD: cannot parse Cargo.lock as TOML: {}", e));
-    let packages = parsed
-        .get("package")
-        .unwrap_or_else(|| {
-            panic!("EGRESS GUARD: Cargo.lock has no [[package]] table — malformed lockfile")
-        })
-        .as_array()
-        .unwrap_or_else(|| {
-            panic!("EGRESS GUARD: Cargo.lock 'package' key is not an array — malformed lockfile")
-        });
-    for pkg in packages {
-        if let Some(name) = pkg.get("name").and_then(|v| v.as_str()) {
-            if FORBIDDEN_CRATES.contains(&name) {
-                return Some(name.to_string());
-            }
-        }
-    }
-    None
-}
-
-/// Run the egress guard — but only when both `enterprise` AND `telemetry`
-/// are active. A plain `--features enterprise` build (the only kind this
-/// project actually produces; see the design note below) returns at the
-/// telemetry gate and never reaches the lockfile scan.
+/// SCOPE — this is the part that was wrong until 2026-07-24. The scan used to be gated on the
+/// `telemetry` feature being ACTIVE, which made it unreachable in every configuration this
+/// project builds: `enterprise = []` activates nothing on its own, and the export deletes the
+/// telemetry feature outright. Three artifacts nevertheless reported that it had passed.
 ///
-/// Panics if the `telemetry` feature is active alongside `enterprise`,
-/// confirming this by scanning Cargo.lock for the forbidden crates that
-/// telemetry pulls in (ureq, rustls, etc.).
+/// The gate is now DECLARED-vs-ACTIVE, not on-vs-off:
 ///
-/// Design note: Cargo.lock records all resolvable packages across ALL feature
-/// combinations — it is not filtered by the current active feature set.
-/// Therefore we scope the scan to builds where both `enterprise` AND
-/// `telemetry` env vars are set; otherwise the lockfile would always contain
-/// rustls (from the telemetry resolution) even when telemetry is disabled.
+/// - the manifest does NOT declare a `telemetry` feature → SCAN. This is the exported
+///   distribution, where the export removed the feature and its dependencies. No telemetry
+///   resolution is possible, so any forbidden crate in the lockfile is a real finding. Every
+///   customer build now enforces the invariant, including the plain `cargo build --release`
+///   they will actually run, since the export rewrites `default = ["enterprise"]`.
+/// - the manifest declares it and it is ACTIVE → SCAN, and refuse. Unchanged.
+/// - the manifest declares it and it is INACTIVE → SKIP. This is the dev fork. Cargo.lock
+///   records all resolvable packages across ALL feature combinations, so the lockfile names
+///   ureq and rustls here even with telemetry off. Scanning would be permanently red, and a
+///   permanently-red guard gets switched off. This branch is deliberately exempt; making the
+///   scan unconditional in the dev fork is the mistake this note exists to prevent.
 fn check_enterprise_egress() {
     // Cargo sets CARGO_FEATURE_<NAME> (uppercased, hyphens → underscores) for
     // every active feature.  Skip entirely unless enterprise is active.
@@ -88,29 +40,66 @@ fn check_enterprise_egress() {
     let manifest_dir =
         std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set by Cargo");
     let lock_path = Path::new(&manifest_dir).join("Cargo.lock");
+    let manifest_path = Path::new(&manifest_dir).join("Cargo.toml");
 
-    // Re-run the guard whenever Cargo.lock changes.
+    // Re-run the guard whenever either input changes. Cargo.toml matters now: whether it
+    // declares the telemetry feature is what decides if the scan runs at all.
     println!("cargo:rerun-if-changed=Cargo.lock");
+    println!("cargo:rerun-if-changed=Cargo.toml");
 
-    // Only scan when telemetry is also active — that is the feature that
-    // brings forbidden networking crates into the compiled binary.
-    // An enterprise-only build (no telemetry) is intentionally allowed.
-    if std::env::var_os("CARGO_FEATURE_TELEMETRY").is_none() {
+    let manifest_text = fs::read_to_string(&manifest_path)
+        .unwrap_or_else(|e| panic!("EGRESS GUARD: cannot read Cargo.toml: {}", e));
+    let telemetry_declared = manifest_declares_telemetry_feature(&manifest_text);
+    let telemetry_active = std::env::var_os("CARGO_FEATURE_TELEMETRY").is_some();
+
+    // The guard ANNOUNCES its decision, both ways. Until 2026-07-24 this code path was
+    // invisible: three separate artifacts claimed the egress guard had passed while it was
+    // returning early in every configuration the project builds, and nothing in any build's
+    // output could have contradicted them. A silent guard is indistinguishable from an absent
+    // one, so it now says which branch it took.
+    //
+    // The scanning line is also the reachability control the export asserts (step 6e): a
+    // decision this code makes for itself is not something an outside script can infer.
+    // And in the distribution it is evidence for the auditor — the build itself states that
+    // the lockfile was checked.
+    if telemetry_declared && !telemetry_active {
+        // Dev fork. See the scope note above — the lockfile legitimately carries the
+        // telemetry dependency graph here, so a hit would not mean what it means elsewhere.
+        println!(
+            "cargo:warning=EGRESS GUARD: SKIPPED — this manifest declares an inactive \
+             'telemetry' feature, so Cargo.lock carries its dependency graph regardless. \
+             Scanning here would be permanently red. No egress claim is made about this build."
+        );
         return;
     }
 
     let lock_text = fs::read_to_string(&lock_path)
         .unwrap_or_else(|e| panic!("EGRESS GUARD: cannot read Cargo.lock: {}", e));
 
+    println!(
+        "cargo:warning=EGRESS GUARD: scanning Cargo.lock for {} forbidden networking crates \
+         (telemetry feature declared: {}, active: {})",
+        FORBIDDEN_CRATES.len(),
+        telemetry_declared,
+        telemetry_active
+    );
+
     if let Some(name) = forbidden_in_lockfile(&lock_text) {
         panic!(
             "EGRESS GUARD: forbidden networking crate '{}' present in Cargo.lock — \
-             enterprise build refused. Build without --features telemetry.",
-            name
+             enterprise build refused.{}",
+            name,
+            if telemetry_active {
+                " Build without --features telemetry."
+            } else {
+                " This tree declares no telemetry feature, so nothing should be pulling \
+                  this crate in. Do not silence the guard — find what added the dependency."
+            }
         );
     }
+
+    println!("cargo:warning=EGRESS GUARD: PASSED — no forbidden networking crate in Cargo.lock");
 }
-// ── End egress guard ──────────────────────────────────────────────────────────
 
 fn main() {
     check_enterprise_egress();
@@ -176,61 +165,7 @@ fn main() {
     fs::write(&dest, combined).expect("Failed to write combined builtin_filters.toml");
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Synthetic Cargo.lock fragment containing a forbidden crate.
-    const LOCK_WITH_REQWEST: &str = r#"
-[[package]]
-name = "serde"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-
-[[package]]
-name = "reqwest"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-"#;
-
-    /// Synthetic Cargo.lock fragment with no forbidden crates.
-    const LOCK_CLEAN: &str = r#"
-[[package]]
-name = "serde"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-
-[[package]]
-name = "rusqlite"
-version = "0.31.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-"#;
-
-    #[test]
-    fn forbidden_in_lockfile_detects_reqwest() {
-        let hit = forbidden_in_lockfile(LOCK_WITH_REQWEST);
-        assert_eq!(hit.as_deref(), Some("reqwest"), "should detect reqwest");
-    }
-
-    #[test]
-    fn forbidden_in_lockfile_passes_clean_graph() {
-        let hit = forbidden_in_lockfile(LOCK_CLEAN);
-        assert!(
-            hit.is_none(),
-            "clean graph should return None, got {:?}",
-            hit
-        );
-    }
-
-    #[test]
-    fn benign_crates_not_flagged() {
-        // rusqlite, libsqlite3-sys, socket2, mio must NOT be in the list
-        for name in &["rusqlite", "libsqlite3-sys", "socket2", "mio"] {
-            assert!(
-                !FORBIDDEN_CRATES.contains(name),
-                "{} must not be in FORBIDDEN_CRATES",
-                name
-            );
-        }
-    }
-}
+// NO `#[cfg(test)] mod tests` HERE — it would never run. The build-script target is
+// `test = false`, so tests written in this file compile in no test binary and report nothing.
+// The egress guard's unit tests live in tests/egress_guard_test.rs, which `include!`s
+// build_support/egress_guard.rs and therefore exercises the same code this file does.

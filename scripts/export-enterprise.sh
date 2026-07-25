@@ -539,8 +539,15 @@ echo "[4/8] Scrubbing telemetry references from non-.rs files across the export 
 #   Cargo.lock       getrandom arrives transitively (verified present, unrelated
 #                    to telemetry, whose deps 2c removes); scrubbing corrupts it.
 #   Cargo.toml       2c already patched it; re-scrubbing would mangle TOML.
-#   build.rs         FORBIDDEN_CRATES literally names ureq/reqwest by design —
-#                    it is the egress denylist.
+#   build.rs         drives the egress guard.
+#   build_support/egress_guard.rs
+#                    FORBIDDEN_CRATES literally names ureq/reqwest by design — it IS the
+#                    egress denylist. Split out of build.rs so its unit tests actually run;
+#                    a build script's own #[cfg(test)] tests never do.
+#   tests/egress_guard_test.rs
+#                    those tests. They assert the declared-vs-active predicate against real
+#                    manifest shapes, so `telemetry = ["ureq"]` appears in string literals
+#                    BY DESIGN. Scrubbing it would delete the assertions.
 #   deny.toml        cargo-deny BANS ureq; the mention is the enforcement.
 #   DISCLAIMER.md REVIEWER-README.md SECURITY-HARDENING.md CHANGELOG.md UPSTREAM.md
 #                    enterprise-authored; they explain that telemetry was REMOVED.
@@ -555,6 +562,7 @@ src_dir = sys.argv[1]
 
 ALLOWLIST = {
     'Cargo.lock', 'Cargo.toml', 'build.rs', 'deny.toml',
+    'build_support/egress_guard.rs', 'tests/egress_guard_test.rs',
     'DISCLAIMER.md', 'REVIEWER-README.md', 'SECURITY-HARDENING.md',
     'CHANGELOG.md', 'UPSTREAM.md',
 }
@@ -750,9 +758,17 @@ case "${SCAN_RC}" in
         ;;
 esac
 
-# 6b. cargo build --release succeeds.
+# 6b. cargo build --release succeeds — AND the build-time egress guard is observed to run.
+#
+# The output is captured rather than streamed because 6e reads it. build.rs announces which
+# branch check_enterprise_egress() took via `cargo:warning=`, and 6e asserts the announcement
+# is present. That assertion is the reachability control: whether the guard's lockfile scan is
+# reachable depends on the exported manifest and on Cargo's feature environment, neither of
+# which this script can infer — it has to be told by the code that decides.
 echo "      [6b] Running cargo build --release …"
-(cd "${OUT_DIR}" && cargo build --release 2>&1)
+BUILD_LOG="$(mktemp -t rtk-export-build.XXXXXX)"
+trap 'rm -f "${MANIFEST_TERMS}" "${BUILD_LOG}"' EXIT
+(cd "${OUT_DIR}" && cargo build --release 2>&1) | tee "${BUILD_LOG}"
 echo "      PASS — cargo build --release succeeded"
 
 # 6c. cargo tree must show no ureq.
@@ -785,14 +801,48 @@ fi
 echo "      PASS — ureq not present in dependency tree (all targets)"
 
 # 6d. cargo build --features enterprise succeeds.
-# NOTE: this does NOT exercise build.rs's egress guard, despite what this step used to claim.
-# check_enterprise_egress() returns early unless CARGO_FEATURE_TELEMETRY is ALSO set, and the
-# export deletes the telemetry feature at 2c — so the lockfile scan is unreachable here by
-# construction. This step proves the enterprise feature set COMPILES; 6c is what covers the
-# dependency graph.
+# This step proves the enterprise feature set COMPILES. It is 6b that a customer actually runs
+# (the export rewrites `default = ["enterprise"]`), and 6e below is what proves the egress
+# guard ran during it. 6c covers the dependency graph independently.
 echo "      [6d] Running cargo build --release --features enterprise …"
 (cd "${OUT_DIR}" && cargo build --release --features enterprise 2>&1)
-echo "      PASS — enterprise feature set compiles (NOT an egress-guard run; see note above)"
+echo "      PASS — enterprise feature set compiles"
+
+# 6e. The build-time egress guard must be OBSERVED to have run during 6b.
+#
+# Until 2026-07-24 the guard was unreachable in every configuration this project builds — it
+# returned early unless the `telemetry` feature was ACTIVE, which the export deletes — and
+# three artifacts nonetheless reported that it had passed. The fix gates the scan on whether
+# telemetry is DECLARED, so it now runs here. This step exists so that claim is checked rather
+# than asserted: build.rs prints its decision, and the export reads it back.
+#
+# Note on what this step is NOT. The obvious check — append a `[[package]] name = "ureq"` entry
+# to the exported Cargo.lock and expect the build to refuse — cannot work, and was measured not
+# to: Cargo PRUNES an extraneous lock entry during resolution, before any build script runs
+# (verified 2026-07-24, ureq present before `cargo metadata`, gone after). The guard only ever
+# sees the resolved graph, which is the only case that matters, but it also means an injected
+# entry proves nothing either way. Hence an announcement, not an injection.
+echo "      [6e] Confirming build.rs's egress guard actually ran …"
+if [[ ! -s "${BUILD_LOG}" ]]; then
+    echo "FATAL: cannot verify — the 6b build log is missing or empty." >&2
+    exit 1
+fi
+if grep -q 'EGRESS GUARD: SKIPPED' "${BUILD_LOG}"; then
+    echo "FATAL: the egress guard SKIPPED its scan during the release build." >&2
+    grep 'EGRESS GUARD' "${BUILD_LOG}" >&2
+    echo "       The exported Cargo.toml still declares a 'telemetry' feature — step 2c did" >&2
+    echo "       not remove it, so the guard treats this tree as the dev fork." >&2
+    exit 1
+fi
+if ! grep -q 'EGRESS GUARD: PASSED' "${BUILD_LOG}"; then
+    echo "FATAL: cannot verify — the release build produced no 'EGRESS GUARD' verdict." >&2
+    echo "       Either build.rs no longer announces its decision, or" >&2
+    echo "       check_enterprise_egress() returned before reaching the scan (is 'enterprise'" >&2
+    echo "       still in the manifest's default feature set?)." >&2
+    exit 1
+fi
+echo "      PASS — egress guard ran and passed during the release build:"
+grep 'EGRESS GUARD' "${BUILD_LOG}" | sed 's/^warning: /        /' | head -3
 
 # ── Step 5: Orphan git commit ────────────────────────────────────────────────
 
@@ -833,4 +883,5 @@ echo "│    residual scan (whole shipped tree)     : PASS (empty)            �
 echo "│    cargo build --release                  : PASS                    │"
 echo "│    cargo tree --target all | grep ureq    : PASS (empty)            │"
 echo "│    cargo build --features enterprise      : PASS (compiles only)    │"
+echo "│    build.rs egress guard observed to run  : PASS                    │"
 echo "└─────────────────────────────────────────────────────────────────────┘"

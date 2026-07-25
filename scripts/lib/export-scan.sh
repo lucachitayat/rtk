@@ -43,8 +43,19 @@ RESIDUAL_TERM_MIN_LEN=4
 # so an entry is a decision, not a convenience.
 RESIDUAL_SCAN_EXCLUDES=(
     Cargo.lock Cargo.toml build.rs deny.toml
+    egress_guard.rs egress_guard_test.rs
     DISCLAIMER.md REVIEWER-README.md SECURITY-HARDENING.md CHANGELOG.md UPSTREAM.md
 )
+# egress_guard.rs is build_support/egress_guard.rs — the pure half of the compile-time guard,
+# split out of build.rs so its unit tests actually run (a build script's own #[cfg(test)] tests
+# never do). It names ureq/reqwest for the same reason build.rs did: it IS the denylist.
+# egress_guard_test.rs is those tests: it asserts the declared-vs-active predicate against real
+# manifest shapes, so `telemetry = ["ureq"]` appears in its string literals BY DESIGN. Both
+# entries are bare basenames because ripgrep --glob matches path suffixes.
+#
+# These two were added deliberately and not as a convenience. The alternative was to spell the
+# vocabulary indirectly in the test's fixtures so the scanner would not see it — obfuscating
+# source to satisfy a detector is strictly worse than an allowlist entry that says why.
 
 # residual_terms <manifest_file>
 #
