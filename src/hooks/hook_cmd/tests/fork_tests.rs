@@ -48,8 +48,27 @@ use super::*;
 // compile-time path and run correctly because the feature is fixed at compile time
 // (no runtime races).
 //
-// The predicate tests for (A) — `test_auto_allow_enabled_*` — stay in hook_cmd.rs
-// next to `auto_allow_enabled()` itself; (B) and (C) live below.
+// The predicate tests for (A) split by which build compiles them. The
+// `#[cfg(not(feature = "enterprise"))]` half — `test_auto_allow_enabled_true_in_default_
+// build_without_var` — stays in hook_cmd.rs next to `auto_allow_enabled()` itself, because
+// the DEFAULT build both compiles and runs it. The enterprise half lives HERE.
+//
+// AMENDED 2026-07-24 — this rule previously said both predicate tests stay in hook_cmd.rs.
+// That was written before anyone noticed the enterprise one never ran. It was
+// `test_auto_allow_enabled_false_when_enterprise_feature`, and it was the ONLY assertion
+// anywhere that `enterprise => !auto_allow_enabled()` — the fork's headline property. It
+// was green everywhere and asserted nowhere, for two independent reasons:
+//
+//   1. its whole body sat behind an inner `#[cfg(feature = "enterprise")]`, so the default
+//      build compiled an EMPTY function and `cargo test` reported it as passed;
+//   2. the one run that does set the feature (post-merge-verify.sh) filters on
+//      `hook_cmd::tests::fork_tests`, and `hook_cmd::tests::…` did not match it.
+//
+// Moving it here fixes leg 2. Putting the cfg on the `#[test]` ITEM rather than inside the
+// body fixes leg 1: under the default build the test now does not exist at all, which is
+// honest, instead of existing as a no-op that reports success. This is the same shape as
+// the four `test_enterprise_*` tests below — a presence assertion is only safe when it
+// actually executes.
 
 // --- Host output shape: permissionDecision absent when auto-allow is off ---
 //
@@ -135,6 +154,19 @@ fn test_hardening_cursor_ask_never_allows_carries_rewrite() {
 }
 
 // --- enterprise feature: compile-time opt-out — full host coverage ---
+
+// The predicate itself. Everything else in this section asserts a HOST RESPONSE SHAPE that
+// follows from `!auto_allow_enabled()`; this one asserts the predicate that makes them all
+// true. If it is ever deleted or re-gated so it stops running, the enterprise build's
+// central guarantee goes back to being unasserted — see the AMENDED note above.
+#[cfg(feature = "enterprise")]
+#[test]
+fn test_auto_allow_enabled_false_when_enterprise_feature() {
+    assert!(
+        !auto_allow_enabled(),
+        "enterprise feature must disable auto_allow_enabled()"
+    );
+}
 
 #[cfg(feature = "enterprise")]
 #[test]

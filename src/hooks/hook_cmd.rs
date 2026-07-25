@@ -1602,17 +1602,11 @@ mod tests {
     }
 
     // --- Predicate logic ---
-
-    #[test]
-    fn test_auto_allow_enabled_false_when_enterprise_feature() {
-        // In a non-enterprise build this test is a no-op (cfg gates the assert).
-        // In an enterprise build it confirms the predicate is always false.
-        #[cfg(feature = "enterprise")]
-        assert!(
-            !auto_allow_enabled(),
-            "enterprise feature must disable auto_allow_enabled()"
-        );
-    }
+    //
+    // The enterprise half of this pair lives in fork_tests.rs, not here. See the note at
+    // the top of that file: gated on `#[cfg(feature = "enterprise")]`, it is only ever
+    // COMPILED by the enterprise build, and the only run under that feature filters on
+    // `hook_cmd::tests::fork_tests` — a filter this path does not match.
 
     // --- Factory Droid hook ---
 
