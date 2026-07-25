@@ -491,24 +491,96 @@ else
 fi
 
 echo ""
-echo "[4/8] Scrubbing telemetry references from non-.rs files under src/ …"
+echo "[4/8] Scrubbing telemetry references from non-.rs files across the export …"
 
-# Strip telemetry-mentioning lines from markdown/text files under src/.
-# Only touches src/ — top-level docs (CHANGELOG.md, UPSTREAM.md, etc.) are
-# intentional and left alone.  Idempotent: git archive always delivers a fresh
-# tree, and a line that was already removed won't be found again.
-python3 - "${OUT_DIR}/src" <<'PYEOF'
+# Strip telemetry-mentioning lines from markdown/text files ACROSS THE WHOLE EXPORT.
+#
+# Was scoped to src/ until 2026-07-24, on the theory that top-level docs were
+# "intentional".  That was wrong and it shipped: README.md carried a live
+# "## Privacy & Telemetry" section stating RTK "can collect anonymous, aggregate
+# usage metrics once per day", and docs/usage/FEATURES.md documented a
+# [telemetry] config block and RTK_TELEMETRY_DISABLED — describing a capability
+# the distro does not contain.  Scoping a residual scrub narrower than the
+# shipped surface means the largest residual is the one nobody looks at.
+#
+# ALLOWLIST — files that mention the vocabulary LEGITIMATELY and must not be
+# scrubbed.  Each entry is a positive signal, not a leak:
+#   Cargo.lock       getrandom arrives transitively (verified present, unrelated
+#                    to telemetry, whose deps 2c removes); scrubbing corrupts it.
+#   Cargo.toml       2c already patched it; re-scrubbing would mangle TOML.
+#   build.rs         FORBIDDEN_CRATES literally names ureq/reqwest by design —
+#                    it is the egress denylist.
+#   deny.toml        cargo-deny BANS ureq; the mention is the enforcement.
+#   DISCLAIMER.md REVIEWER-README.md SECURITY-HARDENING.md CHANGELOG.md UPSTREAM.md
+#                    enterprise-authored; they explain that telemetry was REMOVED.
+# DRIFT GUARD: keep this list in sync with the step-6a scan allowlist below.
+# Anything added here is a file the residual scan will also stop protecting.
+python3 - "${OUT_DIR}" <<'PYEOF'
 import sys
 import os
 import re
 
 src_dir = sys.argv[1]
 
-# Lines matching any of these patterns are removed from non-.rs files under src/.
+ALLOWLIST = {
+    'Cargo.lock', 'Cargo.toml', 'build.rs', 'deny.toml',
+    'DISCLAIMER.md', 'REVIEWER-README.md', 'SECURITY-HARDENING.md',
+    'CHANGELOG.md', 'UPSTREAM.md',
+}
+
+# Lines matching any of these patterns are removed from non-.rs files.
 TELEMETRY_LINE_RE = re.compile(
     r'telemetry\.rs|telemetry_cmd\.rs|telemetry|TelemetryConfig|maybe_ping|ureq',
     re.IGNORECASE,
 )
+
+HEADING_RE = re.compile(r'^(#{1,6})\s')
+
+# Markdown sections are removed WHOLE, before any line-level scrubbing.
+#
+# Line-level scrubbing alone is unsound on prose: it deletes the lines that NAME the
+# thing and keeps the lines that DESCRIBE it. Measured on 2026-07-24 — scrubbing
+# README.md by line removed the "## Privacy & Telemetry" heading and its intro
+# paragraph, then left the ten-row table beneath it fully intact ("Salted device
+# hash", "Command count (24h)", "Estimated USD value", …) because not one of those
+# rows contains the word "telemetry". The residual scan passed, because the
+# detector's vocabulary and the residual's vocabulary had stopped overlapping.
+# The result shipped a detailed data-collection catalogue with the heading that
+# framed it as opt-in removed — strictly worse than leaving the section alone.
+#
+# So: if a HEADING matches, drop from that heading to the next heading of the same
+# or higher level. Body-only mentions still fall through to the line scrubber.
+def strip_md_sections(lines):
+    out, i, dropped = [], 0, 0
+    while i < len(lines):
+        m = HEADING_RE.match(lines[i])
+        if m and TELEMETRY_LINE_RE.search(lines[i]):
+            level = len(m.group(1))
+            i += 1
+            while i < len(lines):
+                m2 = HEADING_RE.match(lines[i])
+                if m2 and len(m2.group(1)) <= level:
+                    break
+                i += 1
+                dropped += 1
+            dropped += 1  # the heading itself
+            continue
+        out.append(lines[i])
+        i += 1
+    return out, dropped
+
+# Stripping lines out of a fenced block can leave ```lang / ``` with nothing between.
+def drop_empty_fences(lines):
+    out, i, dropped = [], 0, 0
+    while i < len(lines):
+        if lines[i].lstrip().startswith('```') and i + 1 < len(lines) \
+                and lines[i + 1].strip() == '```':
+            i += 2
+            dropped += 2
+            continue
+        out.append(lines[i])
+        i += 1
+    return out, dropped
 
 modified = []
 for dirpath, _dirs, filenames in os.walk(src_dir):
@@ -516,25 +588,39 @@ for dirpath, _dirs, filenames in os.walk(src_dir):
         if fname.endswith('.rs'):
             continue  # .rs files already handled by the attribute stripper
         fpath = os.path.join(dirpath, fname)
+        if os.path.relpath(fpath, src_dir) in ALLOWLIST:
+            continue  # legitimate mention — see ALLOWLIST rationale above
         try:
             with open(fpath, 'r', encoding='utf-8') as fh:
                 lines = fh.readlines()
         except (UnicodeDecodeError, PermissionError):
             continue  # skip binary files
 
-        kept = [l for l in lines if not TELEMETRY_LINE_RE.search(l)]
-        if len(kept) == len(lines):
+        sec_dropped = 0
+        if fname.endswith('.md'):
+            lines_after, sec_dropped = strip_md_sections(lines)
+        else:
+            lines_after = lines
+
+        kept = [l for l in lines_after if not TELEMETRY_LINE_RE.search(l)]
+        if fname.endswith('.md'):
+            kept, fence_dropped = drop_empty_fences(kept)
+        else:
+            fence_dropped = 0
+
+        removed_count = len(lines) - len(kept)
+        if removed_count == 0:
             continue  # nothing changed
 
-        rel = os.path.relpath(fpath, os.path.dirname(src_dir))
-        removed_count = len(lines) - len(kept)
+        rel = os.path.relpath(fpath, src_dir)
         with open(fpath, 'w', encoding='utf-8') as fh:
             fh.writelines(kept)
         modified.append((rel, removed_count))
-        print(f"        {rel}  ({removed_count} line{'s' if removed_count != 1 else ''} removed)")
+        detail = f" ({sec_dropped} in whole sections)" if sec_dropped else ""
+        print(f"        {rel}  ({removed_count} line{'s' if removed_count != 1 else ''} removed{detail})")
 
 if not modified:
-    print("        No non-.rs files under src/ required changes.")
+    print("        No non-.rs files required changes.")
 else:
     print(f"      Scrubbed {sum(c for _, c in modified)} line(s) across {len(modified)} file(s).")
 PYEOF
@@ -590,11 +676,25 @@ echo ""
 echo "[6/8] Verifying …"
 
 # 6a. No telemetry / ureq / getrandom / maybe_ping / TelemetryConfig refs remain
-#     in ANY file under src/ (not just .rs — covers README.md and other docs).
-echo "      [6a] Checking for residual telemetry refs in ALL files under src/ …"
+#     anywhere in the SHIPPED TREE — not just src/.
+#
+# Scope was `${OUT_DIR}/src/` until 2026-07-24 and that is how docs/TELEMETRY.md
+# reached customers: 189 lines opening "RTK collects anonymous, aggregate usage
+# metrics once per day", naming a data collector and a contact address. The code
+# was clean the whole time; the scan simply never looked at the largest residual.
+# A detector is only as good as its domain — scanning a subset of what ships and
+# reporting PASS is an absence assertion about a place you did not examine.
+echo "      [6a] Checking for residual telemetry refs across the shipped tree …"
 if ! command -v rg &>/dev/null; then
     echo "FATAL: 'rg' (ripgrep) is required for verification but was not found in PATH." >&2
     echo "       Install with: cargo install ripgrep  OR  brew install ripgrep" >&2
+    exit 1
+fi
+# DOMAIN CONTROL: assert the target exists and is non-empty BEFORE trusting an empty
+# result. rg exits 2 on a missing path, `|| true` swallows it, and an empty GREP_HIT
+# then reads as "clean" — a verification that never ran, reported as a pass.
+if [[ ! -d "${OUT_DIR}" ]] || [[ -z "$(find "${OUT_DIR}" -type f -name '*.rs' -print -quit)" ]]; then
+    echo "FATAL: cannot verify — ${OUT_DIR} is missing or contains no source files." >&2
     exit 1
 fi
 # NOT `-rniE`: those are grep's flags. In ripgrep `-r` is --replace and swallows the next
@@ -602,13 +702,22 @@ fi
 # numbers) and -i (case-insensitivity), and printing `niE` in place of the offending text.
 # On 2026-07-24 that reported `constants.rs: "niE",` for a residual `"telemetry",`, hiding
 # the actual cause. Recursion is implicit when the argument is a directory.
-GREP_HIT="$(rg -n -i 'telemetry|maybe_ping|ureq|TelemetryConfig|getrandom' "${OUT_DIR}/src/" 2>/dev/null || true)"
+#
+# DRIFT GUARD: these --glob exclusions must mirror the step-4 ALLOWLIST. Each is a file
+# whose mention is legitimate (build.rs's FORBIDDEN_CRATES denylist, deny.toml's ban entry,
+# getrandom arriving transitively in Cargo.lock, and the enterprise-authored docs that
+# explain telemetry was removed). Adding a glob here stops protecting that file.
+GREP_HIT="$(rg -n -i 'telemetry|maybe_ping|ureq|TelemetryConfig|getrandom' "${OUT_DIR}" \
+    --glob '!Cargo.lock' --glob '!Cargo.toml' --glob '!build.rs' --glob '!deny.toml' \
+    --glob '!DISCLAIMER.md' --glob '!REVIEWER-README.md' --glob '!SECURITY-HARDENING.md' \
+    --glob '!CHANGELOG.md' --glob '!UPSTREAM.md' \
+    2>/dev/null || true)"
 if [[ -n "${GREP_HIT}" ]]; then
-    echo "FATAL: residual references found under src/:" >&2
+    echo "FATAL: residual references found in the shipped tree:" >&2
     echo "${GREP_HIT}" >&2
     exit 1
 fi
-echo "      PASS — no residual telemetry/ureq/getrandom/maybe_ping/TelemetryConfig in src/"
+echo "      PASS — no residual telemetry/ureq/getrandom/maybe_ping/TelemetryConfig in the shipped tree"
 
 # 6b. cargo build --release succeeds.
 echo "      [6b] Running cargo build --release …"
@@ -616,19 +725,43 @@ echo "      [6b] Running cargo build --release …"
 echo "      PASS — cargo build --release succeeded"
 
 # 6c. cargo tree must show no ureq.
+#
+# Was `cargo tree 2>/dev/null | grep -i ureq || true`. That is fail-OPEN in three ways, all
+# of which printed PASS: cargo tree exiting non-zero (bad lockfile, toolchain, registry),
+# OUT_DIR missing so `cd` fails, and stderr discarded so nobody sees why. An infrastructure
+# failure was indistinguishable from a clean dependency graph, in the check that certifies
+# the distro's central property.
+#
+# Three outcomes now, not two: CLEAN / FOUND / CANNOT-VERIFY. The third is fatal — an
+# unverifiable egress claim is not a passing one.
+#
+# --target all: cargo tree defaults to the HOST triple only, and Cargo.toml already carries
+# a [target.'cfg(unix)'.dependencies] section — so a target-conditional HTTP client would be
+# invisible when exporting from macOS while still compiling into a Windows build.
 echo "      [6c] Checking cargo tree for ureq …"
-TREE_UREQ="$(cd "${OUT_DIR}" && cargo tree 2>/dev/null | grep -i ureq || true)"
+TREE_OUT="$(cd "${OUT_DIR}" && cargo tree --target all 2>&1)"; TREE_RC=$?
+if [[ ${TREE_RC} -ne 0 ]]; then
+    echo "FATAL: cannot verify — 'cargo tree --target all' failed (rc=${TREE_RC}):" >&2
+    echo "${TREE_OUT}" | tail -20 >&2
+    exit 1
+fi
+TREE_UREQ="$(printf '%s\n' "${TREE_OUT}" | grep -i ureq || true)"
 if [[ -n "${TREE_UREQ}" ]]; then
     echo "FATAL: ureq found in cargo tree:" >&2
     echo "${TREE_UREQ}" >&2
     exit 1
 fi
-echo "      PASS — ureq not present in dependency tree"
+echo "      PASS — ureq not present in dependency tree (all targets)"
 
-# 6d. cargo build --features enterprise succeeds (exercises build.rs egress guard).
+# 6d. cargo build --features enterprise succeeds.
+# NOTE: this does NOT exercise build.rs's egress guard, despite what this step used to claim.
+# check_enterprise_egress() returns early unless CARGO_FEATURE_TELEMETRY is ALSO set, and the
+# export deletes the telemetry feature at 2c — so the lockfile scan is unreachable here by
+# construction. This step proves the enterprise feature set COMPILES; 6c is what covers the
+# dependency graph.
 echo "      [6d] Running cargo build --release --features enterprise …"
 (cd "${OUT_DIR}" && cargo build --release --features enterprise 2>&1)
-echo "      PASS — enterprise feature build succeeded (egress guard passed)"
+echo "      PASS — enterprise feature set compiles (NOT an egress-guard run; see note above)"
 
 # ── Step 5: Orphan git commit ────────────────────────────────────────────────
 
