@@ -256,27 +256,27 @@ mod tests {
 }
 ```
 
-### Snapshot Tests (insta crate)
+### Output Format Tests
 
-For complex filters, use snapshot tests:
+For complex filters, pin the exact output with `assert_eq!`:
 
 ```rust
-use insta::assert_snapshot;
-
 #[test]
 fn test_git_log_output_format() {
     let input = include_str!("../tests/fixtures/git_log_raw.txt");
     let output = filter_git_log(input);
 
-    // Snapshot test - will fail if output changes
-    assert_snapshot!(output);
+    // Will fail if output changes unintentionally
+    assert_eq!(output, "expected filtered output");
 }
 ```
 
 **Workflow**:
 1. Run tests: `cargo test`
-2. Review snapshots: `cargo insta review`
-3. Accept changes: `cargo insta accept`
+2. If output changed intentionally, update the `assert_eq!` expected value
+
+(`insta` is a declared dev-dependency but has zero uses in the tree — verified 2026-07-24. Don't
+reach for it; plain `assert_eq!`/`assert!` is the convention.)
 
 ### Integration Tests (Real Commands)
 
@@ -351,9 +351,8 @@ rtk discover                       # Analyze Claude Code history for missed oppo
 
 # Testing
 cargo test --all-features          # All tests
-cargo test --test snapshots        # Snapshot tests only
+cargo test git::                   # Tests for one module
 cargo test --ignored               # Integration tests (requires rtk installed)
-cargo insta review                 # Review snapshot changes
 
 # Performance profiling
 hyperfine 'rtk git log -10' 'git log -10'         # Benchmark startup

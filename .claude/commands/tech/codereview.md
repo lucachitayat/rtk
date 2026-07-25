@@ -85,7 +85,7 @@ git diff "$BASE_BRANCH"...HEAD --stat
 - `#[cfg(test)] mod tests` embarqué dans chaque module
 - Fixtures réelles dans `tests/fixtures/<cmd>_raw.txt`
 - `count_tokens()` pour vérifier savings ≥60%
-- `assert_snapshot!` (insta) pour output format
+- `assert_eq!`/`assert!` pour output format (pas `insta` — inutilisé dans le repo)
 
 **Module**:
 - `lazy_static!` pour regex (compile once, reuse forever)

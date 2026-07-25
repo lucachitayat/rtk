@@ -1,6 +1,6 @@
 ---
 name: tdd-rust
-description: TDD workflow for RTK filter development. Red-Green-Refactor with Rust idioms. Real fixtures, token savings assertions, snapshot tests with insta. Auto-triggers on new filter implementation.
+description: TDD workflow for RTK filter development. Red-Green-Refactor with Rust idioms. Real fixtures, token savings assertions, output-format tests with assert_eq!/assert!. Auto-triggers on new filter implementation.
 triggers:
   - "new filter"
   - "implement filter"
@@ -14,7 +14,7 @@ allowed-tools:
   - Edit
   - Bash
 effort: medium
-tags: [tdd, testing, rust, filters, snapshots, token-savings, rtk]
+tags: [tdd, testing, rust, filters, output-format, token-savings, rtk]
 ---
 
 # RTK TDD Workflow
@@ -28,7 +28,7 @@ Enforce Red-Green-Refactor for all RTK filter development.
 2. GREEN — Implement minimum code to pass
 3. REFACTOR — Clean up, verify still passing
 4. SAVINGS — Verify ≥60% token reduction
-5. SNAPSHOT — Lock output format with insta
+5. LOCK — Pin exact output with `assert_eq!`
 ```
 
 ## Step 1: Real Fixture First
@@ -54,18 +54,17 @@ Fixture naming: `tests/fixtures/<command>_raw.txt`
 #[cfg(test)]
 mod tests {
     use super::*;
-    use insta::assert_snapshot;
 
     fn count_tokens(s: &str) -> usize {
         s.split_whitespace().count()
     }
 
-    // Test 1: Output format (snapshot)
+    // Test 1: Output format
     #[test]
     fn test_filter_output_format() {
         let input = include_str!("../tests/fixtures/mycmd_raw.txt");
         let output = filter_mycmd(input).expect("filter should not fail");
-        assert_snapshot!(output);
+        assert_eq!(output, "expected filtered output");
     }
 
     // Test 2: Token savings ≥60%
@@ -132,17 +131,18 @@ pub fn filter_mycmd(input: &str) -> Result<String> {
 
 Run: `cargo test` → green.
 
-## Step 4: Accept Snapshot
+## Step 4: Verify the Output
 
 ```bash
-# First run creates the snapshot
+# Run the test
 cargo test test_filter_output_format
+```
 
-# Review what was captured
-cargo insta review
-# Press 'a' to accept
+If the `assert_eq!` fails, print the actual output and copy the correct value into the test's
+expected string:
 
-# Snapshot saved to src/snapshots/mycmd_cmd__tests__test_filter_output_format.snap
+```bash
+cargo test test_filter_output_format -- --nocapture
 ```
 
 ## Step 5: Wire to main.rs (Integration)
@@ -258,7 +258,7 @@ Checklist before moving on:
 
 - [ ] `tests/fixtures/<cmd>_raw.txt` — real command output
 - [ ] `filter_<cmd>()` function returns `Result<String>`
-- [ ] Snapshot test passes and accepted via `cargo insta review`
+- [ ] Output-format test passes (`assert_eq!` matches the real filtered output)
 - [ ] Token savings test: ≥60% verified
 - [ ] Empty input test: no panic
 - [ ] Malformed input test: no panic

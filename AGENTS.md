@@ -26,6 +26,64 @@ Origin: a 2026-06-07 false positive where an "RTK silent-drop" on `git status --
 so there was no drop. The lesson: a verify-trigger needs a bounded, cheap disconfirmation
 procedure, not vague suspicion.
 
+## Disconfirming an ALL-CLEAR (the mirror of the above)
+
+The procedure above is one-sided. It was written after a false *positive*, so it
+teaches doubting the alarm. On 2026-07-24 the failures ran the other way: **seven
+false negatives in one session, every one an empty result accepted as "clean".**
+An alarm at least announces itself. An all-clear is silent, arrives sooner, and
+reads as progress.
+
+So before believing any negative result — no matches, nothing found, exit 1, an
+empty diff, a green ✓ — establish two controls. Neither is optional and neither
+substitutes for the other:
+
+1. **DOMAIN control — is there anything there to examine?** Assert the target
+   exists, is non-empty, and is the thing you meant. `grep` exits **2** for "no
+   such path" and **1** for "no match", and `|| true` erases the difference;
+   `rg` on a missing path exits 2 the same way. State the count you scanned
+   (files, lines, packages), not just the count you found.
+2. **DETECTOR control — can this exact command find anything at all?** Plant a
+   positive instance and confirm the *byte-identical* invocation reports it.
+   Retyped or "equivalent" commands do not count: the flags are usually what
+   broke.
+
+Both controls, or you have not verified anything. A canary alone certifies a
+scan of the wrong place; a domain check alone certifies a broken detector
+pointed at real data.
+
+The seven, as a checklist of shapes rather than anecdotes:
+
+- **scanned a target that had been deleted** — `/tmp` export dir was gone; zero
+  matches nearly refuted a real, live defect.
+- **wrong regex dialect** — `grep` with `|` alternation under BRE matched the
+  literal string `a|b`, not either branch. Use `-E`.
+- **flags silently eaten** — `rg -rniE` : ripgrep's `-r` is `--replace`, so this
+  replaced every match with the literal `niE` and dropped `-n` and `-i`.
+- **substring collision** — a match on `mcp-proxy` hit the npm package
+  `@jetbrains/mcp-proxy` and nearly caused deletion of working config.
+- **a test that compiles to nothing** — a body entirely inside
+  `#[cfg(feature = "…")]` runs as an empty function and reports *passed*.
+- **a test target that is never built** — a `#[cfg(test)] mod tests` inside
+  `build.rs` never runs; `cargo metadata` reports `build-script-build` as
+  `test = false`.
+- **a sandbox that is not the tree** — the same grep returned 0 hits in an MCP
+  sandbox and 2 hits on the host, for the same file. Prefer the published
+  artifact (`gh api`) or a host `Read`; a sandbox copy is a different target.
+
+Corollaries worth stating separately, because each cost real time here:
+
+- **A filter matching zero tests still exits 0.** `cargo test <filter>` prints
+  `0 passed` and succeeds. Assert the count is non-zero, not just the exit code.
+- **A canary `✗` indicts the detector, not the tree.** Fix the scan — its flags,
+  its pattern, its scanned root — and do not trust that run's other greens.
+- **A control that has never been seen to fail is not a control.** Re-break the
+  detector on purpose and confirm the control reds. Two canaries were falsified
+  this way after they had been written and looked convincing.
+- **Wire the check to the decision.** Printing "MARKERS REMAIN" next to an
+  unconditional `git commit` is not a gate; a conflict-marker pair landed in a
+  commit here for exactly that reason.
+
 ## RTK fork facts (version-specific — rot-prone, kept out of the always-on layer)
 
 - Fork version is **`<upstream/develop base>-dev-fork.N`**. Do NOT hardcode the numbers here —

@@ -6,6 +6,98 @@ Newest entries on top.
 
 ---
 
+## 2026-07-24 (later still) — Executing the hardening plan: seven more false negatives
+
+Implemented the reviewed plan. Every item landed, and the work produced **seven more false
+negatives of its own** — same shape as the nine it was fixing, three of them in code written
+*during* this session specifically to prevent them. The generalised procedure now lives in
+`AGENTS.md` § Disconfirming an ALL-CLEAR, the mirror of the one-sided compression-drop note.
+
+### What shipped
+
+| Change | Where | What it now asserts |
+|---|---|---|
+| Shared gate ported | `develop` | the four `inv_exists` guards + `inv_absent` rationale that only harden had; the shared script is byte-identical on both branches again |
+| Shell fixtures discovered by glob | shared | default-include over `scripts/test-*.sh`, five integration suites named in `SH_TEST_EXCLUDE`, each exclusion's existence asserted; fixture count non-zero; each fixture must report a non-zero passing count |
+| MCP absence by vocabulary | shared | `inv_grep_absent 'mcp_rewrite\|McpProxy\|Commands::Mcp'` — the two existing checks are hardcoded paths, so a reintroduction under any other name passed both |
+| CI installs ripgrep | shared | ~35 rg-dependent assertions across 5 files that had never run; `RTK_REQUIRE_RG=1` makes the skip fatal on the unix legs |
+| `ureq` in the CI egress scan | shared | the alternation had reqwest/std::net/TcpStream/UdpSocket and omitted the fork's actual HTTP client |
+| Auto-allow predicate relocated | harden | `enterprise ⇒ !auto_allow_enabled()` now asserted by a test that executes |
+| Residual pattern derived + unioned | harden | `scripts/lib/export-scan.sh`; 2a/2c record what they removed, 6a unions it with a hardcoded floor |
+| Export detector fixture | harden | `scripts/test-export-detectors.sh`, 38 assertions, re-broken 5 ways |
+| Egress guard made reachable | harden | declared-vs-active gate; `cargo:warning` announcement; export step 6e reads it back |
+
+### The seven
+
+1. **A grep in an MCP sandbox returned 0 hits for a file with 2.** Comparing the dev and distro
+   lockfiles for the 24 forbidden crates, the sandbox reported both clean. On the host, `ureq` is at
+   `Cargo.lock:1271` and `rustls` at `:979`. The sandbox is a *different target*, not a cheaper view
+   of the same one. Ground truth: host `Read`, or `gh api` for the published artifact.
+2. **`cargo test <filter>` exits 0 on zero matches** — already known, but it is what let
+   `test_auto_allow_enabled_false_when_enterprise_feature` be green in two places at once.
+3. **A `#[cfg(test)] mod tests` inside `build.rs` never runs.** `cargo metadata` reports
+   `build-script-build` as `test = false`; the three `forbidden_in_lockfile` tests appeared 0 times
+   in `cargo test --all`. The plan cited them as the egress guard's positive control. They had never
+   executed — and the guard was about to start refusing customer builds.
+4. **My own canary passed under the bug it was written to catch.** Each planted file in
+   `test-export-detectors.sh` also contained `fn zz_<term>() {}` — the LOWERCASE term. Re-breaking
+   the lib to `rg -rniE` (which loses `-i`) left every canary still matching, via the function name.
+   Caught only by re-breaking; the fixture had looked convincing and was green.
+5. **A fixture that reported failure and exited 0.** With the derivation broken to a replacement,
+   the term list came back empty, the per-term loop expanded an empty array under `set -u`, and the
+   script died printing neither a verdict nor a `N passed` line.
+6. **A check printed next to an unconditional commit is not a gate.** Resolving the develop→harden
+   merge left a `<<<<<<<`/`>>>>>>>` pair in `post-merge-verify.sh`; my marker check printed "MARKERS
+   REMAIN" and the `&&`-chained `git commit` ran anyway. Amended. The conflict-marker scan's own
+   domain also excluded `scripts/` — it could not see a conflict in the script doing the scanning.
+   `scripts/` and `build.rs` are now in the scanned set.
+7. **`cargo` prunes an injected lockfile entry before any build script runs.** The plan's
+   verification for the egress guard — append a `ureq` package to the export's `Cargo.lock` and
+   expect the build to refuse — was tried and the build SUCCEEDED. Measured: `ureq` present before
+   `cargo metadata`, gone after. The guard only ever sees the resolved graph. Replaced with an
+   announcement the export reads back.
+
+### Three premises in the plan turned out false
+
+- **"Deleting the `!` in `auto_allow_enabled()` must red the gate — today it does not."** It did.
+  Measured pre-move: exit 101, 3 failed, via the `test_enterprise_{copilot_cli,cursor,gemini}_*`
+  host-shape tests. The true statement is narrower: the property was asserted only
+  *consequentially*, by tests that exist to pin response shapes. Relax those for host-shape reasons
+  and the headline guarantee silently goes unasserted. The move gives it a direct witness.
+- **"`cli-testing.md` mandates `insta` snapshot tests."** That file does not mention `insta` or
+  "snapshot" at all. The mandate lives in five other files under `.claude/`; `insta` is declared at
+  `Cargo.toml:51` with zero uses in `src/` or `tests/`.
+- **"`forbidden_in_lockfile` already has unit tests as its positive control."** See (3).
+
+Also, `for t in scripts/test-*.sh` as literally specified matched **six** scripts, five of which
+need an installed `rtk` binary or an external toolchain. Discovery is right; the glob needed an
+asserted exclusion list rather than trust.
+
+### Cross-branch green counts
+
+State them, because "green on both branches" without the qualification is itself an absence
+assertion. `develop` legitimately skips the enterprise block.
+
+- `develop`: **29 ✓**, plus `(skipped — no 'enterprise' feature in Cargo.toml)`. Exit 0.
+- `harden/no-egress`: **34 ✓**. Exit 0.
+
+The difference is exactly five, and reconciling it is the point of stating the numbers at all:
+the enterprise release build, its gated tests, the `test-export-detectors.sh` fixture, and the
+two conflict-marker scan targets added here (`scripts/`, `build.rs`). 29 + 5 = 34, so no section
+went quietly missing on either side.
+
+### Open
+
+- The distro at `lucachitayat/rtk-enterprise` is still built from `7a4e10f` and does **not** carry
+  the egress guard fix, the derived residual pattern, or step 6e. A re-export and force-push is
+  required for those to reach customers; not done here, since publishing is the user's call.
+- `insta` is an unused dev-dependency (`Cargo.toml:51`). Dropping it is a separate decision from
+  correcting the docs that mandate it.
+- `.claude/rules/cli-testing.md` still describes the suite it wants in places, not the one that
+  exists. Narrowed the `#[ignore]` claim only.
+
+---
+
 ## 2026-07-24 (later) — Adversarial review of the verification surface
 
 Reviewed the post-sync hardening plan with four adversarial subagents (counterexamples, logic traps,

@@ -58,5 +58,30 @@ commit it there too or you will keep hitting the wrong guard.
 ## Verifying a fix properly
 
 Run the harness **before** the fix and capture the wrong behaviour, then after. A fix to a guard
-that was never observed failing is a guess. See `AGENTS.md` § RTK compression-drop
-disconfirmation for the same principle applied to output diffs.
+that was never observed failing is a guess. See `AGENTS.md` § Disconfirming an ALL-CLEAR for the
+generalisation, and § RTK compression-drop disconfirmation for the same principle applied to
+output diffs.
+
+## Writing a positive control for a SCAN
+
+These harnesses trigger guards by building state. The other family of untestable-by-normal-use
+check is the **scan** that reports PASS on finding nothing, where a wrong pattern, wrong root or
+eaten flag is indistinguishable from a clean tree. `scripts/test-export-detectors.sh` is the
+worked example (it controls the enterprise export's residual scan); `scripts/test-master-only.sh`
+is the template both follow. A canary must satisfy all five, and each one is there because a
+canary lacking it was written, looked convincing, and was then falsified:
+
+1. planted **inside the scanned root**, under a **non-hidden** filename — ripgrep applies its
+   hidden-file filter to directory traversals but not to explicitly-named paths (rg 15.2.0:
+   explicit hidden file `rc=0`, same file via traversal `rc=1`), so a canary outside the root or
+   hidden inside it probes a path the real scan cannot reach;
+2. a **mixed-case** token, and nothing case-matching the pattern anywhere else in the planted
+   file — a lowercase canary passes even when `-i` has been lost;
+3. probed through the **same function the real check calls**, not a retyped command line — which
+   is why the detector lives in `scripts/lib/`;
+4. assert the canary's **path appears in rendered output**, not merely that the exit status moved;
+5. **one canary per alternation term** — one term witnesses one branch.
+
+Then the part that makes the set a control rather than a decoration: **re-break the detector on
+purpose and confirm the canaries fail.** A canary that has never been seen to fail is one more
+uncontrolled absence assertion.

@@ -236,7 +236,7 @@ fn filter_output(input: &str) -> Result<String> { ... }
 mod tests {
     use super::*;
     fn count_tokens(s: &str) -> usize { s.split_whitespace().count() }
-    // ... snapshot tests, savings tests
+    // ... output-format tests, savings tests
 }
 ```
 

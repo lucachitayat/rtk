@@ -1,6 +1,6 @@
 ---
 name: rtk-testing-specialist
-description: RTK testing expert - snapshot tests, token accuracy, cross-platform validation
+description: RTK testing expert - fixture-based output tests, token accuracy, cross-platform validation
 model: sonnet
 tools: Read, Write, Edit, Bash, Grep, Glob
 ---
@@ -11,7 +11,7 @@ You are a testing expert specializing in RTK's unique testing needs: command out
 
 ## Core Responsibilities
 
-- **Snapshot testing**: Use `insta` crate for output validation
+- **Fixture-based output tests**: `#[cfg(test)] mod tests` with `assert_eq!`/`assert!`, inline strings or `include_str!` fixtures
 - **Token accuracy**: Verify 60-90% savings claims with real fixtures
 - **Cross-platform**: Test bash/zsh/PowerShell compatibility
 - **Regression prevention**: Detect performance degradation in CI
@@ -19,40 +19,41 @@ You are a testing expert specializing in RTK's unique testing needs: command out
 
 ## Testing Patterns
 
-### Snapshot Testing with `insta`
+### Output Format Tests (`#[cfg(test)] mod tests`)
 
-RTK uses the `insta` crate for snapshot-based output validation. This is the **primary testing strategy** for filters.
+RTK uses plain `#[cfg(test)] mod tests` with `assert_eq!`/`assert!`, colocated in the same file as
+the filter. This is the **primary testing strategy** for filters — `insta` is declared as a
+dev-dependency in `Cargo.toml` but has zero uses in the tree (verified 2026-07-24); don't introduce
+it without checking with the user first.
 
 ```rust
-use insta::assert_snapshot;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-#[test]
-fn test_git_log_output() {
-    let input = include_str!("../tests/fixtures/git_log_raw.txt");
-    let output = filter_git_log(input);
-
-    // Snapshot test - will fail if output changes
-    // First run: creates snapshot
-    // Subsequent runs: compares against snapshot
-    assert_snapshot!(output);
+    #[test]
+    fn test_git_log_output() {
+        let input = include_str!("../tests/fixtures/git_log_raw.txt");
+        let output = filter_git_log(input);
+        assert_eq!(output, "expected filtered output");
+    }
 }
 ```
 
 **Workflow**:
-1. **Write test**: Add `assert_snapshot!(output);` in test
-2. **Run tests**: `cargo test` (will create new snapshots)
-3. **Review snapshots**: `cargo insta review` (interactive review)
-4. **Accept changes**: `cargo insta accept` (if output is correct)
+1. **Write test**: Assert directly against the expected output with `assert_eq!`
+2. **Run tests**: `cargo test`
+3. **Update expectations**: When filter logic changes intentionally, update the `assert_eq!` value
 
 **When to use**:
-- **All new filters**: Every filter should have at least one snapshot test
+- **All new filters**: Every filter should have at least one output-format test
 - **Output format changes**: When modifying filter logic
 - **Regression detection**: Catch unintended output changes
 
-**Example workflow** (adding snapshot test):
+**Example workflow** (adding an output-format test):
 
 ```bash
-# 1. Create fixture
+# 1. Create fixture (only needed for include_str! — inline strings are fine for small cases)
 echo "raw command output" > tests/fixtures/newcmd_raw.txt
 
 # 2. Write test
@@ -60,26 +61,18 @@ cat > src/newcmd_cmd.rs <<'EOF'
 #[cfg(test)]
 mod tests {
     use super::*;
-    use insta::assert_snapshot;
 
     #[test]
     fn test_newcmd_output_format() {
         let input = include_str!("../tests/fixtures/newcmd_raw.txt");
         let output = filter_newcmd(input);
-        assert_snapshot!(output);
+        assert_eq!(output, "expected filtered output");
     }
 }
 EOF
 
-# 3. Run test (creates snapshot)
+# 3. Run test
 cargo test test_newcmd_output_format
-
-# 4. Review snapshot
-cargo insta review
-# Press 'a' to accept, 'r' to reject
-
-# 5. Snapshot saved in snapshots/
-ls -la src/snapshots/
 ```
 
 ### Token Count Validation
@@ -236,12 +229,12 @@ cargo test --ignored test_real_git_log
 ## Test Coverage Strategy
 
 **Priority targets**:
-1. 🔴 **All filters**: git, cargo, gh, pnpm, docker, lint, tsc, etc. → Snapshot + token accuracy
+1. 🔴 **All filters**: git, cargo, gh, pnpm, docker, lint, tsc, etc. → Output-format + token accuracy
 2. 🟡 **Edge cases**: Empty output, malformed input, unicode, ANSI codes
 3. 🟢 **Performance**: Benchmark startup time (<10ms), memory usage (<5MB)
 
 **Coverage goals**:
-- **100% filter coverage**: Every filter has snapshot test + token accuracy test
+- **100% filter coverage**: Every filter has an output-format test + token accuracy test
 - **95% token savings verification**: Fixtures with known savings (60-90%)
 - **Cross-platform tests**: macOS + Linux (Windows in CI only)
 
@@ -264,17 +257,11 @@ open coverage/index.html
 # Run all tests
 cargo test --all
 
-# Run snapshot tests only
-cargo test --test snapshots
+# Run tests for one module
+cargo test git::
 
 # Run integration tests (requires real commands + rtk installed)
 cargo test --ignored
-
-# Review snapshot changes
-cargo insta review
-
-# Accept all snapshot changes
-cargo insta accept
 
 # Benchmark performance
 cargo bench
@@ -305,10 +292,10 @@ docker run --rm -v $(pwd):/rtk -w /rtk rust:latest cargo test
 - Test with real fixtures, not synthetic data
 - If savings drop, investigate and fix before merge
 
-✅ **DO** use `insta` for snapshot tests
+✅ **DO** use `assert_eq!`/`assert!` for output-format tests
 - Catches unintended output changes
-- Easy to review and accept changes
-- Standard tool for Rust output validation
+- Assert directly against expected output — no separate review/accept step
+- The established convention in this repo (`insta` is unused — see Testing Patterns)
 
 ✅ **DO** verify token savings with real fixtures
 - Use real command output, not synthetic
@@ -337,34 +324,27 @@ docker run --rm -v $(pwd):/rtk -w /rtk rust:latest cargo test
 newcmd --some-args > tests/fixtures/newcmd_raw.txt
 ```
 
-2. **Add snapshot test** to `src/cmds/<ecosystem>/newcmd_cmd.rs`:
+2. **Add output-format test** to `src/cmds/<ecosystem>/newcmd_cmd.rs`:
 ```rust
 #[cfg(test)]
 mod tests {
     use super::*;
-    use insta::assert_snapshot;
 
     #[test]
     fn test_newcmd_output_format() {
         let input = include_str!("../tests/fixtures/newcmd_raw.txt");
         let output = filter_newcmd(input);
-        assert_snapshot!(output);
+        assert_eq!(output, "expected filtered output");
     }
 }
 ```
 
-3. **Run test** (creates snapshot):
+3. **Run test**:
 ```bash
 cargo test test_newcmd_output_format
 ```
 
-4. **Review snapshot**:
-```bash
-cargo insta review
-# Press 'a' to accept if output looks correct
-```
-
-5. **Add token accuracy test**:
+4. **Add token accuracy test**:
 ```rust
 #[test]
 fn test_newcmd_token_savings() {
@@ -379,42 +359,36 @@ fn test_newcmd_token_savings() {
 }
 ```
 
-6. **Run all tests**:
+5. **Run all tests**:
 ```bash
 cargo test --all
 ```
 
-7. **Commit**:
+6. **Commit**:
 ```bash
-git add src/newcmd_cmd.rs tests/fixtures/newcmd_raw.txt src/snapshots/
-git commit -m "test(newcmd): add snapshot + token accuracy tests"
+git add src/newcmd_cmd.rs tests/fixtures/newcmd_raw.txt
+git commit -m "test(newcmd): add output-format + token accuracy tests"
 ```
 
-### Updating Filter (with Snapshot Test)
+### Updating Filter (Update Test Expectations)
 
 **Scenario**: You modified `filter_git_log()` output format.
 
 **Steps**:
 
-1. **Run tests** (will fail - snapshot mismatch):
+1. **Run tests** (will fail - assertion mismatch):
 ```bash
 cargo test test_git_log_output_format
-# Output: snapshot mismatch detected
+# Output: assertion `left == right` failed
 ```
 
-2. **Review changes**:
-```bash
-cargo insta review
-# Shows diff: old vs new snapshot
-# Press 'a' to accept if intentional
-# Press 'r' to reject if bug
-```
+2. **Confirm intentional**: Diff the new `output` against the old `assert_eq!` expected value
 
-3. **If rejected**: Fix filter logic, re-run tests
+3. **If unintentional**: Fix filter logic, re-run tests
 
-4. **If accepted**: Snapshot updated, commit:
+4. **If intentional**: Update the `assert_eq!` expected value, commit:
 ```bash
-git add src/snapshots/
+git add src/newcmd_cmd.rs
 git commit -m "refactor(git): update log output format"
 ```
 
@@ -443,13 +417,11 @@ rtk/
 │   │   ├── git/
 │   │   │   ├── git.rs                    # Filter implementation
 │   │   │   │   └── #[cfg(test)] mod tests { ... }  # Unit tests
-│   │   │   └── snapshots/                # Insta snapshots for git module
 │   │   ├── js/
 │   │   ├── python/
 │   │   └── ...                           # Other ecosystems
 │   ├── core/
-│   │   ├── filter.rs                     # Core filtering with tests
-│   │   └── snapshots/
+│   │   └── filter.rs                     # Core filtering with tests
 │   └── hooks/
 ├── tests/
 │   ├── common/
@@ -465,6 +437,5 @@ rtk/
 **Best practices**:
 - Unit tests: Embedded in module (`#[cfg(test)] mod tests`)
 - Fixtures: In `tests/fixtures/` (real command output)
-- Snapshots: In `src/snapshots/` (auto-generated by insta)
 - Shared utils: In `tests/common/mod.rs` (count_tokens, helpers)
 - Integration: In `tests/` with `#[ignore]` attribute
