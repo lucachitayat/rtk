@@ -36,9 +36,24 @@ const FORBIDDEN_CRATES: &[&str] = &[
 /// Scan `lock_text` (contents of Cargo.lock) for any forbidden networking
 /// crate.  Returns `Some(name)` for the first hit, `None` if the graph is
 /// clean.  Pure function — easy to unit-test.
+///
+/// Fails closed: a Cargo.lock that cannot be parsed as TOML, or that lacks
+/// the `[[package]]` array a real lockfile always has, panics instead of
+/// reporting "clean". An egress guard that cannot read its input must
+/// refuse, not silently approve.
 fn forbidden_in_lockfile(lock_text: &str) -> Option<String> {
-    let parsed: toml::Value = lock_text.parse().ok()?;
-    let packages = parsed.get("package")?.as_array()?;
+    let parsed: toml::Value = lock_text
+        .parse()
+        .unwrap_or_else(|e| panic!("EGRESS GUARD: cannot parse Cargo.lock as TOML: {}", e));
+    let packages = parsed
+        .get("package")
+        .unwrap_or_else(|| {
+            panic!("EGRESS GUARD: Cargo.lock has no [[package]] table — malformed lockfile")
+        })
+        .as_array()
+        .unwrap_or_else(|| {
+            panic!("EGRESS GUARD: Cargo.lock 'package' key is not an array — malformed lockfile")
+        });
     for pkg in packages {
         if let Some(name) = pkg.get("name").and_then(|v| v.as_str()) {
             if FORBIDDEN_CRATES.contains(&name) {
@@ -49,7 +64,10 @@ fn forbidden_in_lockfile(lock_text: &str) -> Option<String> {
     None
 }
 
-/// Run the egress guard for enterprise builds.
+/// Run the egress guard — but only when both `enterprise` AND `telemetry`
+/// are active. A plain `--features enterprise` build (the only kind this
+/// project actually produces; see the design note below) returns at the
+/// telemetry gate and never reaches the lockfile scan.
 ///
 /// Panics if the `telemetry` feature is active alongside `enterprise`,
 /// confirming this by scanning Cargo.lock for the forbidden crates that
