@@ -6,7 +6,7 @@ Suggested fork-only changes worth contributing back to `rtk-ai/rtk`, ranked by
 This fork tracks `upstream/develop`. The goal of upstreaming is to **shrink the
 fork's permanent delta** — every accepted PR is one less thing to carry through
 future syncs. See `FORK_NOTES.md` for the full fork divergence and
-`.claude/skills/rtk-upgrade-2/SKILL.md` for the sync workflow.
+`.claude/skills/rtk-upgrade/SKILL.md` for the sync workflow.
 
 > **Snapshot:** assessed 2026-06-18 against `upstream/develop` @ `39cbb96`
 > (fork `develop` @ `c8c2ac6`). Re-verify duplication before acting — upstream
@@ -49,7 +49,7 @@ Fork-defining divergence, not general-purpose:
 
 - MCP bridge/rewrite removal
 - Fork versioning + upgrade tooling (`scripts/rtk-upgrade.sh`,
-  `scripts/upgrade-check.sh`, `scripts/lib/master-only.sh`, the `rtk-upgrade-2`
+  `scripts/upgrade-check.sh`, `scripts/lib/master-only.sh`, the `rtk-upgrade`
   skill)
 - `FORK_NOTES.md`, this file
 

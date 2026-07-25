@@ -13,7 +13,7 @@
 #             run before the push; local + reversible (reinstall the prior tag).
 #
 # The real work lives in the companions: scripts/upgrade-check.sh, scripts/post-merge-verify.sh.
-# Orchestration contract: .claude/skills/rtk-upgrade-2/SKILL.md.
+# Orchestration contract: .claude/skills/rtk-upgrade/SKILL.md.
 #
 # Usage:  bash scripts/rtk-upgrade.sh {check | apply [ref] | install}
 #   ref — optional explicit merge target (default: upstream/develop). Per-invocation only.
@@ -31,7 +31,7 @@ warn()  { printf "\033[33m%s\033[0m\n" "$*"; }
 
 usage() { echo "usage: bash scripts/rtk-upgrade.sh {check | apply [ref] | install}"; exit 2; }
 
-# ── Fork versioning (spec: .claude/skills/rtk-upgrade-2/SKILL.md § Versioning) ──
+# ── Fork versioning (spec: .claude/skills/rtk-upgrade/SKILL.md § Versioning) ──
 # Fork version = "<upstream/develop base>-dev-fork.<N>", mirrored in lockstep across
 # Cargo.toml, .release-please-manifest.json, and Cargo.lock's own `rtk` entry.
 # DRIFT GUARD: these three files are the canonical version sites. CHANGELOG.md is resolved
