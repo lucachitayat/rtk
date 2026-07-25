@@ -2,8 +2,9 @@
 # upgrade-check.sh — Decide whether to merge upstream into this RTK fork.
 #
 # Workflow:
-#   1. Fetch upstream
-#   2. Show divergence (develop vs upstream/develop, develop vs upstream/master)
+#   1. Fetch upstream (the sync source) AND origin (the fork's own remote)
+#   2. Show divergence (develop vs upstream/develop, develop vs upstream/master,
+#      current branch vs origin/<current branch> — the stale-base check)
 #   3. List new upstream commits and the files they touch
 #   4. Highlight commits touching high-traffic filter paths (where output really changes)
 #   5. Pull `rtk gain --history` so the high-traffic list is live, not stale
@@ -69,13 +70,27 @@ echo "branch: $CUR_BRANCH"
 echo "fork head: $(git log -1 --oneline HEAD)"
 echo
 
-bold "── Fetching upstream ──"
+bold "── Fetching remotes ──"
 if ! git remote get-url upstream >/dev/null 2>&1; then
   echo "FAIL: 'upstream' remote not configured. Run: git remote add upstream git@github.com:rtk-ai/rtk.git"
   exit 1
 fi
 # Fetch branches only; skip tags to avoid local-tag conflicts (e.g. 'latest').
 git fetch upstream develop master 2>&1 | tail -5 || true
+# `origin` is the fork's OWN remote — where the merge eventually gets PUSHED. Unlike `upstream`
+# a missing `origin` is NOT fatal: a fork can legitimately be local-only, and the rest of this
+# report (sync-source bookkeeping, hot paths, merge preview) is still fully valid without it.
+# Warn instead, and record HAS_ORIGIN so the Divergence section can say "not checked" rather
+# than silently print a reassuring zero.
+HAS_ORIGIN=0
+if git remote get-url origin >/dev/null 2>&1; then
+  HAS_ORIGIN=1
+  # --no-tags for the same local-tag-conflict reason as above; the fork's own tags are already
+  # local, and compute_target (rtk-upgrade.sh) derives -dev-fork.N from them.
+  git fetch --no-tags origin 2>&1 | tail -5 || hot "WARN: 'git fetch origin' failed — stale-base check uses the last known origin refs."
+else
+  hot "WARN: 'origin' remote not configured — cannot check the local branch against the fork's own remote."
+fi
 echo
 
 bold "── Divergence ──"
@@ -94,6 +109,40 @@ dim "develop behind upstream/master:  $MASTER_BEHIND commits  (broken down in Ma
 MERGE_BEHIND=$(git rev-list --count HEAD..upstream/develop 2>/dev/null || echo "?")
 if [ "$CUR_BRANCH" != "develop" ]; then
   hot "$CUR_BRANCH behind upstream/develop: $MERGE_BEHIND commits  (apply merges into THIS branch)"
+fi
+
+# ── Fork-remote divergence — a THIRD category, distinct from both lines above ──
+# Three refs are in play at every sync. The two `develop` lines are sync-SOURCE bookkeeping
+# (upstream, never a decision gate). MERGE_BEHIND is what apply merges IN. These lines are
+# neither: they compare the local branch to the fork's OWN remote — where the merge is
+# eventually PUSHED. It is the only one of the three that can make the merge itself worthless,
+# so unlike the develop lines it DOES gate a decision (rtk-upgrade.sh apply hard-refuses on it).
+# Found 2026-07-24: local `develop` was 1 commit behind `origin/develop` (pushed from another
+# machine on 2026-07-12). check never looked at origin, reported no problem, and apply merged
+# 231 upstream commits onto that stale base — duplicating a fix that already existed in the
+# missed commit. Discovered only when the final `git push` was rejected as non-fast-forward.
+if [ "$HAS_ORIGIN" = "0" ]; then
+  dim "origin: remote not configured — local-vs-fork-remote divergence NOT checked"
+elif ! git rev-parse --verify --quiet "refs/remotes/origin/$CUR_BRANCH" >/dev/null; then
+  # Informational, NOT an error and explicitly NOT a "0": there is no remote base to be stale
+  # against yet (brand-new branch never pushed, or detached HEAD).
+  dim "origin/$CUR_BRANCH: no such remote branch — never pushed (or detached HEAD); nothing to be stale against"
+else
+  ORIGIN_BEHIND=$(git rev-list --count "HEAD..origin/$CUR_BRANCH" 2>/dev/null || echo "?")
+  ORIGIN_AHEAD=$(git rev-list --count "origin/$CUR_BRANCH..HEAD" 2>/dev/null || echo "?")
+  if [ "$ORIGIN_BEHIND" = "0" ]; then
+    echo "$CUR_BRANCH behind origin/$CUR_BRANCH: 0 commits  (base is current with the fork's own remote)"
+  else
+    hot "⚠ STALE BASE: $CUR_BRANCH is $ORIGIN_BEHIND commit(s) BEHIND origin/$CUR_BRANCH."
+    hot "  Merging now builds the sync on a base the fork's own remote has already moved past,"
+    hot "  and the eventual 'git push' WILL be rejected as non-fast-forward — after every gate passes."
+    hot "  Integrate first:  git pull --ff-only origin $CUR_BRANCH   (or --rebase if you have local commits)"
+    # `|| true`: head closing the pipe SIGPIPEs git log, and this script runs under
+    # `set -e` + pipefail — an unguarded truncated pipeline would abort the whole report.
+    git log --oneline --no-decorate "HEAD..origin/$CUR_BRANCH" | head -10 | sed 's/^/      /' || true
+  fi
+  # Ahead is normal and expected — apply deliberately leaves the merge committed-but-unpushed.
+  echo "$CUR_BRANCH ahead  of origin/$CUR_BRANCH: $ORIGIN_AHEAD commits  (unpushed local work — normal)"
 fi
 # Version delta — apply will retrack fork to <develop-base>-dev-fork.N (see SKILL.md § Versioning).
 FORK_VER=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')

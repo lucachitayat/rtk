@@ -76,11 +76,37 @@ pull+reinstall. All that determinism lives in the scripts, so it never has to li
    the printed `next:` command (`apply`) **once**. Render its `✓`/`✗` checklist.
    - If `check` showed the merge preview as unavailable (`?` / git < 2.38), ask one confirm
      question before running `apply` (the conflict signal is degraded).
+   - `check` reports three separate divergences: `develop` vs `upstream/develop` (sync-source
+     bookkeeping), `HEAD` vs `upstream/develop` (what the merge brings in — the decision input),
+     and the branch vs `origin/<branch>` (the fork's own remote). A `⚠ STALE BASE` block means
+     `apply` will refuse; report it and stop — the user integrates with `git pull --ff-only` (or
+     `--rebase`), never you. Merging onto a stale base duplicates landed work and the push is
+     rejected after every gate has already passed.
 5. **If `apply` reports an aborted merge** → STOP and report the conflict list verbatim. Do NOT
-   inspect files or resolve by hand — `apply` already restored the tree.
+   inspect files or resolve by hand — `apply` already restored the tree. Wait for the user.
+   - **If the user then says to resolve them**, the sanctioned route back onto the golden path is:
+     `git merge --no-ff <target> -m "merge: sync <target> @ <sha> (<n> commits)"` (the exact command
+     `apply` runs), resolve ONLY the conflicted files, `git add` + `git commit`, then **re-run
+     `bash scripts/rtk-upgrade.sh apply`**. The merge is already committed, so `apply`'s own merge
+     step reports `Already up to date` and it proceeds straight to `reconcile_version` + the full
+     gate. Do NOT hand-roll the version retrack: it is `reconcile_version` in `rtk-upgrade.sh` and
+     sourcing that file to call it directly fails (`BASH_SOURCE` is unbound under `eval`).
+   - Prefer merging into `develop` over a feature branch. On 2026-07-24 the same sync produced 2
+     conflicts on `develop` but 4 on `harden/no-egress`, the two extra being `src/main.rs` and
+     `src/hooks/hook_cmd.rs` — the security-sensitive pair. Sync `develop` first, then bring the
+     feature branch forward, so doc conflicts and egress-surface conflicts are reviewed separately.
 6. **If any gate shows `✗`** → read the inline failure digest first. Open `/tmp/pmv_*.txt` only if
    the digest is insufficient, and **at most the first ~60 lines**. Fix the cause, then re-run
    `bash scripts/post-merge-verify.sh` to reverify — never hand-roll `cargo`.
+   - **A textually clean merge can still be semantically broken.** Expect `E0063`-class failures
+     where upstream adds a struct field and a fork-only initializer does not set it — git merges
+     both sides without complaint and the gate is what catches it. Fix by adopting upstream's
+     idiom (e.g. `..Struct::DEFAULT`), not by special-casing the fork.
+   - **Disconfirm before claiming a regression.** A `✗` may be environmental, not merge damage:
+     `RTK_NO_AUTO_ALLOW=1` in the shell flips `auto_allow_enabled()` and reds 7 upstream hook
+     tests on `harden/no-egress`. Re-run with `env -u RTK_NO_AUTO_ALLOW`, and to prove a failure
+     pre-dates the merge, run the same target in a throwaway `git worktree add --detach <pre-merge-sha>`.
+     Full procedure: `AGENTS.md` § RTK compression-drop disconfirmation.
 7. **All gates `✓`** → ask the user to confirm the local install (AskUserQuestion). On confirm,
    run `bash scripts/rtk-upgrade.sh install` **once** and render its `✓`/`✗`. This recompiles and
    installs the merged binary to `~/.cargo/bin` and verifies the installed `rtk --version` matches
@@ -130,6 +156,13 @@ pass/fail summary). Don't restate the full diff stat unless asked.
   `post-merge-verify.sh`, since shell tests are NOT covered by `cargo test`/`clippy`).
 
 ## Maintenance
+
+**Before changing a guard, reproduce it firing.** Most of both scripts only runs when something
+is wrong, so in the repo's steady state a broken guard is indistinguishable from a working one —
+two shipped defective on 2026-07-24 and neither showed up in a normal run. `debug/` holds
+scenario builders (`simulate-stale-origin.sh`, `simulate-behind-upstream.sh`, both
+`setup`/`teardown`, both local-only) that construct the triggering state. Run the harness before
+and after your change; see `debug/README.md`.
 
 The decision pivots — `HOT_PATHS` (in `scripts/upgrade-check.sh`), the fork-invariant checks
 (in `scripts/post-merge-verify.sh`), and the `VERSION_FILES` set (in `scripts/rtk-upgrade.sh`) —

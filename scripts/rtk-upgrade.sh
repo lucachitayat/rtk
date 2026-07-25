@@ -6,7 +6,8 @@
 #             (the agent runs the printed `next:` command — it does not re-derive it).
 #   apply   — re-preview at merge time, merge upstream/develop with a SCRIPTED abort path, then
 #             post-merge-verify.sh. Leaves the merge COMMITTED-BUT-UNPUSHED; the push is gated by
-#             the human / skill, never here.
+#             the human / skill, never here. Hard-refuses if the tree has tracked changes OR the
+#             branch is behind its own origin/<branch> (see assert_not_behind_origin).
 #   install — `cargo install --path .` the merged binary into ~/.cargo/bin, then VERIFY the
 #             installed `rtk --version` matches the merged Cargo.toml version. Closes the gap
 #             where apply only builds target/release/rtk and never installs it. Confirmed step,
@@ -176,6 +177,50 @@ report_manual_conflict_hints() {
   esac
 }
 
+# ── Stale-base guard: refuse to merge onto a branch that is behind its OWN remote ──
+# Three refs are in play at every sync, and the tooling historically modelled only two of them:
+#   upstream/develop  — the sync SOURCE (what gets merged IN)
+#   origin/<branch>   — the fork's OWN remote (where the merge eventually gets PUSHED)
+#   <branch>          — the local branch (what gets merged INTO)
+# Ignoring the middle one cost a full merge on 2026-07-24: local `develop` sat 1 commit behind
+# `origin/develop` (pushed from another machine on 2026-07-12). `check` reported no problem
+# because it never looked at origin, so `apply` merged 231 upstream commits onto that stale
+# base. The work duplicated a bug fix that already existed in the missed commit, and nothing
+# surfaced until the final `git push` was rejected as non-fast-forward — after every gate had
+# passed and the merge was long since committed.
+# Fail-closed, in the same spirit as the not-clean-working-tree guard: print what is missing,
+# exit non-zero with the tree UNTOUCHED, and let the human choose how to integrate. Deliberately
+# does NOT auto-pull — integrating someone else's commits is a decision, not a side effect.
+# Three cases where it stays silent and returns 0, by design:
+#   • no `origin` remote, or origin/<branch> does not exist (brand-new branch never pushed) —
+#     there is no remote base to be stale against, and a missing ref must never read as "0";
+#   • detached HEAD — no branch name to resolve a remote-tracking ref from;
+#   • merely AHEAD of origin — unpushed local work is the NORMAL state here, since `apply`
+#     itself deliberately leaves the merge committed-but-unpushed.
+# DRIFT GUARD: this reads only remote-tracking refs, so it is only as fresh as the last fetch —
+# it MUST be called after the origin fetch in cmd_apply, never before. If a second merge entry
+# point is ever added to this script, call it there too; its counterpart report line lives in
+# upgrade-check.sh's `── Divergence ──` section and the two must keep telling the same story.
+assert_not_behind_origin() {
+  local branch behind ahead
+  branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+  [ -n "$branch" ] && [ "$branch" != "HEAD" ] || return 0
+  git rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null || return 0
+  behind=$(git rev-list --count "HEAD..origin/$branch" 2>/dev/null || echo 0)
+  ahead=$(git rev-list --count "origin/$branch..HEAD" 2>/dev/null || echo 0)
+  [ "$behind" != "0" ] || return 0
+  fail "branch '$branch' is $behind commit(s) BEHIND origin/$branch — refusing to merge onto a stale base. Tree untouched."
+  git log --oneline --no-decorate "HEAD..origin/$branch" | head -10 | sed 's/^/      /'
+  dim  "      (local is also $ahead commit(s) ahead of origin/$branch)"
+  warn "  Merging now would sync upstream onto a base the fork's own remote has already moved past:"
+  echo "      • work already landed in those commits gets duplicated or reverted by the merge"
+  echo "      • the eventual 'git push' is rejected as non-fast-forward — after every gate has passed"
+  dim  "  Integrate first, then re-run apply:"
+  echo "      git pull --ff-only origin $branch     # no local commits to keep"
+  echo "      git pull --rebase  origin $branch     # local commits to keep"
+  return 1
+}
+
 cmd_check() {
   # upgrade-check.sh fetches upstream and prints the full decision report, ending with a
   # machine-stable `RECOMMENDATION: CURRENT|DEFER|INVESTIGATE` line we map to a next command.
@@ -212,6 +257,19 @@ cmd_apply() {
     git fetch upstream develop 2>&1 | tail -3 || true
   fi
 
+  # Refresh the fork's OWN remote too — assert_not_behind_origin below reads only
+  # remote-tracking refs, so a stale origin/<branch> makes the guard silently useless (which is
+  # exactly the 2026-07-24 failure mode: nobody had fetched origin since another machine pushed).
+  # Runs for ANY target, including an explicit override: the push destination does not change
+  # with the merge source. Tolerates failure — offline degrades to a warning + last-known refs,
+  # never a hard block, since everything else `apply` does is local.
+  if git remote get-url origin >/dev/null 2>&1; then
+    git fetch --no-tags origin 2>&1 | tail -3 \
+      || warn "  ⚠ could not fetch origin — stale-base check falls back to the last known origin refs."
+  else
+    dim "  (no 'origin' remote — stale-base check skipped)"
+  fi
+
   # Refuse to entangle a merge with uncommitted TRACKED work (modified or staged).
   # Untracked files are deliberately NOT a blocker: git will not merge into them, and the
   # abort path's reset cannot clobber them, so gating on them is strictly too tight — a stray
@@ -227,6 +285,9 @@ cmd_apply() {
     warn "  ⚠ untracked files present — not a blocker (they cannot conflict with the merge):"
     printf '%s\n' "$untracked" | sed 's/^/      /'
   fi
+
+  # Fail-closed stale-base guard — must run AFTER the origin fetch above and BEFORE any merge.
+  assert_not_behind_origin || exit 1
 
   # Read-only preview at merge time — ADVISORY only. merge-tree --name-only does not cleanly
   # enumerate conflicted paths, so we never decide on it: the guarded real merge below is the
