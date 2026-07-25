@@ -7,3 +7,32 @@ tests/fixtures/** -text
 # never has. union merge keeps BOTH sides' lines on conflict so a fork sync neither drops the
 # fork's authored history nor upstream's new entries. (Spec: rtk-upgrade/SKILL.md § Versioning.)
 CHANGELOG.md merge=union
+
+# ── Enterprise distribution surface (export-ignore) ───────────────────────────
+# scripts/export-enterprise.sh step 1 is `git archive <ref> | tar -x`, which emits EVERY tracked
+# path. Until 2026-07-24 nothing bounded that, so the published distro shipped the fork's internal
+# engineering context to customers — agent tooling, internal instructions, and FORK_NOTES.md, a
+# running log of this fork's security posture, its known gaps and its unfixed defects.
+#
+# `export-ignore` makes the shipped surface an explicit, reviewable declaration instead of
+# "whatever happens to be tracked". This is deliberately preferred over scrubbing: an allowlist in
+# the residual scan has to be maintained per-pattern forever, while an exclusion removes whole
+# classes of leak permanently and is auditable at a glance.
+#
+# DRIFT GUARD: adding a fork-internal file at the repo root, or a new directory of fork tooling,
+# means adding it here. Anything NOT listed here ships to customers. Verify after any change with:
+#   git archive harden/no-egress | tar -t | awk -F/ '{print ($1 ~ /\./ ? $1 : $1"/")}' | sort -u
+.claude/                            export-ignore
+.github/                            export-ignore
+scripts/                            export-ignore
+AGENTS.md                           export-ignore
+CLAUDE.md                           export-ignore
+FORK_NOTES.md                       export-ignore
+UPSTREAM_CANDIDATES.md              export-ignore
+docs/maintainers/                   export-ignore
+
+# The telemetry surface itself. The dev fork legitimately documents telemetry (it is a real,
+# feature-gated capability here); the distro must not, because the distro has no telemetry at all.
+# Keeping these out of `git archive` is what stops the shipped docs contradicting the shipped code.
+docs/TELEMETRY.md                   export-ignore
+docs/guide/resources/telemetry.md   export-ignore
