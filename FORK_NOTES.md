@@ -6,6 +6,96 @@ Newest entries on top.
 
 ---
 
+## 2026-07-24 (later) — Adversarial review of the verification surface
+
+Reviewed the post-sync hardening plan with four adversarial subagents (counterexamples, logic traps,
+alternative paradigms, downstream contract safety). The review paid for itself several times over:
+it falsified three of the plan's six mechanisms and surfaced a live defect in the published distro.
+
+### The frame
+
+Every defect in the sync was an **absence assertion** — a check proving a negative — and every one
+failed by returning "all clear." Presence checks fail loud; absence checks fail silent *and
+reassuring*. Round 2 then falsified the dichotomy in both directions, and the corrected invariant is
+the one worth keeping:
+
+> Absence assertions need a **detector** control AND a **domain** control. Presence assertions fail
+> loud only when they actually **execute**.
+
+### Live defect — the distro was shipping its own contradiction
+
+`docs/TELEMETRY.md` was published in `lucachitayat/rtk-enterprise`: 189 lines opening *"RTK collects
+anonymous, aggregate usage metrics once per day"*, naming a data collector and a contact address —
+in a distribution whose entire premise is no egress. The binary was clean the whole time; only the
+documentation lied.
+
+Cause: step 1 is `git archive | tar -x`, `.gitattributes` had no `export-ignore`, and the residual
+scan was scoped to `${OUT_DIR}/src/`. **Nothing defined what the distro ships.** The published tree
+also contained `.claude/` (agent skills, rules, debug harnesses), `AGENTS.md`, `CLAUDE.md`,
+`.github/`, `scripts/`, and `FORK_NOTES.md` — this file, a running log of the fork's security posture
+and unfixed defects, delivered to the customers it is meant to reassure.
+
+Fixed by declaring the shipped surface (`ef1c4ae`) rather than scrubbing it: an allowlist in a scan
+must be maintained per-pattern forever, an exclusion removes whole classes of leak and is auditable
+at a glance.
+
+### Line-scrubbing prose is unsound — measured, not theorised
+
+Widening the scan alone made things *worse*. Line-based scrubbing deletes the lines that NAME the
+thing and keeps the lines that DESCRIBE it: README's `## Privacy & Telemetry` heading and intro went,
+and the ten-row table beneath survived — "Salted device hash", "Command count (24h)", "Estimated USD
+value" — because not one row contains the word "telemetry". **The scan passed.** The detector's
+vocabulary and the residual's vocabulary had simply stopped overlapping. Shipped result: a
+data-collection catalogue with the sentence that framed it as opt-in removed, plus two empty code
+fences. Now removes markdown **sections** whole and collapses emptied fences (`7a4e10f`).
+
+Conclusion recorded for the follow-up: **subtract code, author prose.** Code subtraction is
+mechanical and the compiler is the witness. Prose subtraction is judgment executed by a regex, and a
+distro's docs should say *different* things ("no egress, here is how to verify"), which no
+subtraction can produce. An `enterprise/docs/` overlay belongs in the fork — not in the enterprise
+repo, which is regenerated as an orphan commit and would destroy hand edits. Precedent already
+exists: `DISCLAIMER.md` + `REVIEWER-README.md` + `SECURITY-HARDENING.md` = 324 authored lines.
+
+### Checks that were green and proved nothing
+
+- **`build.rs`'s egress guard has never run.** It returns unless `CARGO_FEATURE_TELEMETRY` is *also*
+  set; `enterprise = []` activates nothing and the export deletes the telemetry feature, so the
+  lockfile scan is unreachable in every configuration this project builds — while
+  `export-enterprise.sh` and `post-merge-verify.sh` both printed that it passed. Labels corrected;
+  reachability (gate on feature *declaration*, not activation) is still open.
+- **`build.rs`'s own unit tests never execute.** Build scripts compile to a standalone binary, so
+  `cargo test` does not run them. The positive control for `forbidden_in_lockfile` had itself never
+  run. Correct invocation is recorded in the review transcript.
+- **`cargo test <filter>` exits 0 when the filter matches nothing** — verified:
+  `zzz_no_such_filter` → exit 0, "0 passed, 2544 filtered out". The enterprise gate step would have
+  printed a green `✓ (0 passed)` the day upstream relocated the module. Now asserts a non-zero count.
+- **`test_auto_allow_enabled_false_when_enterprise_feature` asserts nothing anywhere.** Its body is
+  entirely `#[cfg(feature = "enterprise")]`, so the default build runs an empty function and reports
+  passed; and the only enterprise run filters on `fork_tests`, which its path does not match. The
+  fork's headline property — `enterprise ⇒ !auto_allow_enabled()` — has no executing witness. Move
+  pending; note it contradicts `fork_tests.rs:53-54`, which must be amended in the same commit.
+- **`grep` exit 2 read as clean.** The conflict-marker scan's `else` branch treated a missing path
+  argument as "no markers found". Four `inv_exists` guards added.
+- **`cargo tree` fail-open.** `2>/dev/null | grep -i ureq || true` printed PASS when cargo tree
+  failed *and* when `OUT_DIR` was absent. Three outcomes now: CLEAN / FOUND / CANNOT-VERIFY. Also
+  `--target all`, since it defaulted to the host triple while `Cargo.toml` has a `cfg(unix)` section.
+- **`ci.yml`'s egress scan omits `ureq`** — the fork's actual HTTP client — on a branch named
+  `harden/no-egress`. Open.
+- **~30 `rg`-dependent tests pass vacuously in CI**, which never installs ripgrep. Open; note the
+  `test` job is a 3-OS matrix with no install steps (the `tree` install is in the `benchmark` job).
+
+### Method note, recorded deliberately
+
+Verifying the telemetry-doc finding, I scanned `/tmp/rtk-enterprise-export`, got zero matches, and
+nearly reported the finding refuted. **The directory had been deleted.** I read an empty result from
+a non-existent target as "clean" — the exact failure this entry is about, committed while
+investigating it. Ground truth came from `gh api` against the published repo. Four further false
+negatives came from my own malformed patterns (BRE `|`, `rg -r`, unescaped backticks). The rule:
+**assert the target exists before believing an empty result**, and prefer the published artifact over
+any local copy.
+
+---
+
 ## 2026-07-24 — Sync upstream/develop @ bee2178 (231 commits); tooling hardening
 
 Merged 231 commits from `upstream/develop` into `develop` (merge `7659d3a`, `--no-ff`), then brought
