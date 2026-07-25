@@ -107,6 +107,10 @@ pull+reinstall. All that determinism lives in the scripts, so it never has to li
      tests on `harden/no-egress`. Re-run with `env -u RTK_NO_AUTO_ALLOW`, and to prove a failure
      pre-dates the merge, run the same target in a throwaway `git worktree add --detach <pre-merge-sha>`.
      Full procedure: `AGENTS.md` § RTK compression-drop disconfirmation.
+   - **A canary `✗` indicts the DETECTOR, not the tree.** A positive control plants a token where a
+     scan must find it, so its `✗` says the scan cannot see what it is meant to see. Fix the scan —
+     its flags, its pattern, its scanned root — don't go hunting for residual telemetry that isn't
+     there, and don't trust a "clean" result from that same run.
 7. **All gates `✓`** → ask the user to confirm the local install (AskUserQuestion). On confirm,
    run `bash scripts/rtk-upgrade.sh install` **once** and render its `✓`/`✗`. This recompiles and
    installs the merged binary to `~/.cargo/bin` and verifies the installed `rtk --version` matches
@@ -129,6 +133,8 @@ pull+reinstall. All that determinism lives in the scripts, so it never has to li
 
 - **Trust the `✓`/`✗`.** Do NOT re-verify a script's result with manual `git show` / `cat-file` /
   `git diff` / `cargo`. The scripts already assert every fork invariant and run the full gate.
+  One exception in how you *read* a `✗`, not in re-verifying it: a failing canary / positive-control
+  check means the scan is broken, not the tree — Flow step 6.
 - **Run the `next:` command** the `check` report prints — don't re-derive what to run next.
 - **Don't re-run a passing script.** Re-run one only when its inputs changed (e.g.
   `post-merge-verify.sh` after a human fix). Reverify with the script, never by hand.
@@ -172,8 +178,8 @@ scenario builders (`simulate-stale-origin.sh`, `simulate-behind-upstream.sh`, bo
 `setup`/`teardown`, both local-only) that construct the triggering state. Run the harness before
 and after your change; see `debug/README.md`.
 
-The decision pivots — `HOT_PATHS` (in `scripts/upgrade-check.sh`), the fork-invariant checks
-(in `scripts/post-merge-verify.sh`), and the `VERSION_FILES` set (in `scripts/rtk-upgrade.sh`) —
+The decision pivots — `HOT_PATHS` (`scripts/upgrade-check.sh:24`), the fork-invariant checks
+(in `scripts/post-merge-verify.sh`), and the `VERSION_FILES` set (`scripts/rtk-upgrade.sh:41`) —
 are hand-maintained and each carries a `DRIFT GUARD` comment. When you add or remove a fork
 feature, a high-traffic filter, or a version-carrying file, update the matching list in the same
 change so this skill can't silently bless a merge that dropped a fork feature or skipped a version
@@ -181,3 +187,18 @@ site. The version scheme + conflict contract live in § Versioning above; `Cargo
 `.release-please-manifest.json`, and `Cargo.lock` are the only files `apply` reconciles — if a new
 version-carrying file appears (e.g. a real `Formula/rtk.rb` version), add it to `VERSION_FILES` and
 the §5 consistency gate, or it will drift.
+
+Two proposals to convert a `DRIFT GUARD` comment into an assertion derived from its own arrays were
+reviewed and REJECTED. Leave both guards as written, and not for the obvious reason:
+
+- **`rtk-upgrade.sh:161`'s `DRIFT GUARD` must be left as-is — do NOT derive the hints from the
+  arrays.** `OURS_DOC_FILES=(README.md)` (`:56`), while the hint matcher it guards (`:162-178`)
+  covers `what-rtk-covers.md`, `src/main.rs`, `src/hooks/hook_cmd.rs` — the COMPLEMENT set. The
+  invariant is *disjointness, not equality*: deriving would emit a hint for README.md and DELETE
+  the hints for the routing table and the egress surface — precisely the two this skill leans on to
+  stop a hand-resolve resurrecting the MCP bridge. A future change wanting this needs a
+  `NEVER_AUTO_FILES` array introduced first; none exists today.
+- **`HOT_PATHS` stays an instruction, but not because it is irreducible.** An instruction is
+  irreducible only when its subject is neither in the merged tree nor available at runtime, and
+  `HOT_PATHS` arguably fails that test — `upgrade-check.sh:252-257` already pulls `rtk gain
+  --history` live. Read it as unconverted, not unconvertible.

@@ -192,6 +192,12 @@ mvn/phpstan/dotnet output) alongside their own inline cases.
 
 ### Real Command Execution
 
+The `#[ignore]`-tagged, real-binary-spawning pattern below is illustrative of the shape, not
+of the location: today it lives colocated in `src/` test modules (verified 2026-07-24: 8
+occurrences across `src/main.rs`, `src/cmds/git/git.rs`, `src/cmds/jvm/mvn_cmd.rs`,
+`src/cmds/system/read.rs`), not in the top-level `tests/*.rs` files described above — those
+currently carry zero `#[ignore]` tags.
+
 ```rust
 #[test]
 #[ignore] // Run with: cargo test --ignored
@@ -335,7 +341,10 @@ rtk/
   `src/cmds/jvm/mvn_cmd.rs` for the pattern.
 - **`count_tokens` helper**: currently duplicated per test module — don't assume a shared
   `tests/common/mod.rs` exists.
-- **Integration**: top-level `tests/*.rs` files, some with `#[ignore]`-tagged real-process tests.
+- **Integration**: top-level `tests/*.rs` files (none currently carry `#[ignore]`). The
+  `#[ignore]`-tagged real-process pattern lives instead in `src/` colocated test modules
+  (verified 2026-07-24: 8 occurrences across `src/main.rs`, `src/cmds/git/git.rs`,
+  `src/cmds/jvm/mvn_cmd.rs`, `src/cmds/system/read.rs`).
 
 ## Testing Checklist
 
