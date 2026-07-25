@@ -58,8 +58,14 @@ green()  { printf "\033[32m%s\033[0m\n" "$*"; }
 source "$REPO_ROOT/scripts/lib/master-only.sh"
 
 bold "=== RTK upgrade-check ==="
+# The branch actually checked out. `apply` merges upstream into THIS branch, so the merge
+# preview below is computed against it (not against a hardcoded `develop`).
+CUR_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+if [ "$CUR_BRANCH" = "HEAD" ]; then
+  CUR_BRANCH="detached@$(git rev-parse --short HEAD)"
+fi
 echo "repo: $REPO_ROOT"
-echo "branch: $(git rev-parse --abbrev-ref HEAD)"
+echo "branch: $CUR_BRANCH"
 echo "fork head: $(git log -1 --oneline HEAD)"
 echo
 
@@ -131,7 +137,8 @@ dim "(three-dot upstream-side delta since the merge-base — only what the merge
 # merge-base — i.e. exactly what the merge brings in. Two-dot (develop..upstream/develop)
 # symmetrically diffs the two endpoints and renders the fork's own commits as huge
 # "deletions" (FORK_NOTES.md, scripts/, az_cmd.rs, …) — misleading, and it once triggered
-# a false-alarm investigation. This list mirrors the merge-tree preview below.
+# a false-alarm investigation. NOTE: this list is develop-based; the merge preview below
+# follows HEAD, so on a feature branch the preview can name conflicts outside this list.
 git diff --stat develop...upstream/develop | tail -40
 echo
 
@@ -155,12 +162,22 @@ if [ "$HOT_HITS" = "0" ]; then
 fi
 echo
 
-# Read-only 3-way merge simulation — authoritative answer to "will this conflict?".
+# Read-only 3-way merge simulation — authoritative answer to "will this conflict?" FOR THE
+# BRANCH IT NAMES.
+# Computed against HEAD, deliberately NOT against `develop`: `apply` merges upstream/develop
+# into whatever branch is checked out. A preview hardcoded to `develop` answers a different
+# question than the one `apply` acts on — on 2026-07-24 it reported 2 conflicts from a feature
+# branch while the real merge produced 4 (it missed src/main.rs and src/hooks/hook_cmd.rs).
+# DRIFT GUARD: the divergence / commit-listing / hot-path sections above intentionally stay on
+# `develop` — that is the sync SOURCE bookkeeping. Only this preview follows HEAD.
 # Needs git >= 2.38. Exit 0 = clean (prints a bare tree OID); exit 1 = conflicts
 # (OID line followed by the conflicted paths under --name-only).
 bold "── Merge preview (read-only dry run) ──"
+if [ "$CUR_BRANCH" != "develop" ]; then
+  hot "  preview computed for branch $CUR_BRANCH (not develop) — apply will merge into this branch"
+fi
 CONFLICTS=""
-MERGE_OUT=$(git merge-tree --write-tree --name-only develop upstream/develop 2>/dev/null) && MT_RC=0 || MT_RC=$?
+MERGE_OUT=$(git merge-tree --write-tree --name-only HEAD upstream/develop 2>/dev/null) && MT_RC=0 || MT_RC=$?
 if [ "$MT_RC" = "0" ]; then
   green "  ✓ Clean 3-way merge — zero conflicts."
 elif [ "$MT_RC" = "1" ]; then
