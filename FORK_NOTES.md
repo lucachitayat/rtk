@@ -6,6 +6,88 @@ Newest entries on top.
 
 ---
 
+## 2026-07-24 — Sync upstream/develop @ bee2178 (231 commits); tooling hardening
+
+Merged 231 commits from `upstream/develop` into `develop` (merge `7659d3a`, `--no-ff`), then brought
+`harden/no-egress` forward (merge `6fe29c6`). Fork version retracked to `0.42.4-dev-fork.2`. Both
+branches pushed; `cargo install --path . --force` verified the installed binary matches.
+
+### Merge into `develop` — 2 conflicts, both docs
+- `README.md` → took **ours**. Upstream's side hardcoded a stale `rtk 0.28.2` in the verify snippet;
+  the fork's is version-agnostic. This case is now mechanised (see `OURS_DOC_FILES`).
+- `docs/guide/resources/what-rtk-covers.md` → genuine merge, took upstream's header (matches the rest
+  of the doc) plus its `jest` row the fork had dropped. Verified the `az` section (12 rows) survived
+  and no MCP re-advertisement crept back.
+
+### Merge into `harden/no-egress` — 5 conflicts
+Sequencing mattered: the same upstream delta conflicts in **2** files on `develop` but **4** on
+`harden/no-egress`, the extra two being `src/main.rs` and `src/hooks/hook_cmd.rs` — the egress-sensitive
+pair. Syncing `develop` first isolated the doc conflicts from the security-relevant ones.
+- Three were pure adjacency: fork enterprise tests vs upstream's new Factory Droid tests (×2), and
+  `RTK_META_COMMANDS` next to upstream's new `SbtCommands` enum. All additive, both sides kept.
+- `cursor_ask` was real divergence. The fork omitted `"permission"` entirely; upstream now sets
+  `"permission": "ask"`. **Adopted upstream's.** Both prompt the human, so approval is unchanged, and
+  the fork's test was overspecified — it asserted field *absence* when the actual invariant is "never
+  `allow`". Retitled `test_hardening_cursor_ask_never_allows_carries_rewrite` and it now asserts the
+  value. Removes a divergence that conflicted on every sync.
+- Upstream moved `RTK_META_COMMANDS` into a new shared `src/core/constants.rs`; the fork's local copy
+  became a dead duplicate (`dead_code` error). Deleted it after diffing both lists — identical apart
+  from upstream leaving `"telemetry"` ungated.
+
+### Semantic conflict — a clean merge that did not compile
+`src/discover/rules.rs` merged textually clean, then failed `E0063`: upstream refactored `RtkRule` to a
+`..RtkRule::DEFAULT` spread and added `pipeline_final_safe`, and the fork's `az` rule predates that,
+enumerating fields explicitly. Adopted the spread like every neighbouring rule (`7673a53`). Yields
+`pipeline_final_safe: false`, inert for `az` — it is always a shell pipeline's *first* segment.
+
+### Tooling defects found and fixed
+- **`check`'s CURRENT early-exit keyed on `develop`, not `HEAD`** (`954b4a5`). The merge preview had been
+  moved to follow `HEAD`, but the early-exit deciding whether the preview is *reached* had not — so on a
+  feature branch behind upstream while `develop` was current, `check` printed CURRENT and exited before
+  previewing. Caught only by running `check` in a detached worktree at the pre-merge commit, where it
+  claimed CURRENT while 228 commits behind with 19 conflicting files. Six decision sites moved to
+  `HEAD..upstream/develop`; the `develop` lines remain sync-source bookkeeping that must not gate.
+- **The conflict-marker probe false-positived on `={7}`** — upstream's new `src/cmds/python/uv_cmd.rs`
+  carries a pytest banner fixture. Independently already fixed on `origin/develop` by `533bda5`
+  (2026-07-12); this sync duplicated that work because local `develop` was one commit stale and
+  nothing in `check` looks at `origin`. Resolved in favour of `533bda5`, which also carries CRLF and
+  Windows path fixes. **Root cause is now tracked: the tooling models `upstream` and the local branch
+  but never the fork's own remote.**
+- **`apply` refused to run on untracked files** — an unrelated agent worktree directory blocked it.
+  Untracked files cannot conflict with a merge nor be clobbered by the abort path's hard reset.
+
+### Enterprise / MCP notes
+- `develop` carries **no** enterprise code at all — no `[features]` block, no `auto_allow_enabled`, no
+  export script. The whole apparatus lives on `harden/no-egress`. That separation is sound; keep it.
+- `post-merge-verify.sh` never builds or tests `--features enterprise`, so a merge can break the distro
+  and it is only caught at export time by `export-enterprise.sh` step 6d. Verified manually this sync
+  (clean), but that was luck, not verification.
+- 8 fork-only tests (`test_hardening_*`, `test_enterprise_*`) sit inside `src/hooks/hook_cmd.rs`, an
+  upstream-owned high-churn file, and caused 2 of the 5 conflicts above. Same permanent-conflict-surface
+  pattern that motivated dropping the MCP bridge on 2026-05-21.
+- `~/.claude.json` still registers a `rider` MCP server invoking `rtk mcp-proxy`, a subcommand deleted
+  in `8011f9a` (2026-05-21). The entry cannot work and will hang. Recovery anchor if ever wanted:
+  tag `fork/mcp-bridge-archive-20260521`.
+
+### Notable upstream content
+Full changelog compiled to `/tmp/rtk-upstream-changelog.md` (149 itemized + 32 noise = 181 non-merge).
+Dominant theme is correctness hardening: a cross-cutting `never_worse` output guard (`861a46d`) so RTK
+can never emit more tokens than the raw command; a grep/rg overhaul (`eafadce`, `37ee6cf`, `66b95cb`,
+`0adfae6`) making `grep` run the engine actually invoked instead of silently substituting ripgrep with
+translated flags — which had been causing silent false-negative greps in this very repo; a 26-commit
+series fixing `cargo --message-format=json` reporting failing builds as compiled; `dotnet test` no
+longer double-reporting failures; and TOML-filter trust-gating (`1130a7c`) requiring explicit
+`rtk trust` before any custom filter runs.
+
+### Build gate
+`env -u RTK_NO_AUTO_ALLOW bash scripts/post-merge-verify.sh` — all green on both branches: fmt, clippy,
+2539/2550 tests, 8 shell tests, release build, 11 fork invariants, 3 behaviour spot-checks, version
+consistency. With `RTK_NO_AUTO_ALLOW=1` set (the ambient shell value), 7 upstream hook tests fail on
+`harden/no-egress`; proved pre-existing by running the identical target in a detached worktree at
+`4fa5c40`, which failed the same 7.
+
+---
+
 ## 2026-06-03 — Sync upstream/develop @ 4f4a6a0 (7 commits)
 
 Merged 7 commits from `upstream/develop` into `develop` (merge commit `9f062ab`, `--no-ff`). **Clean 3-way merge — zero conflicts** (confirmed pre-merge by `git merge-tree`). Only 3 files changed (`Cargo.toml`, `src/cmds/git/git.rs`, `src/core/args_utils.rs`); all 41 prior fork commits preserved, `az_cmd.rs` and the `rtk-upgrade` skill intact.
