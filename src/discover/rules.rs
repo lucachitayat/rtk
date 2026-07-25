@@ -662,7 +662,7 @@ pub const RULES: &[RtkRule] = &[
             ("cosmosdb", 75.0),
             ("keyvault", 82.0),
         ],
-        subcmd_status: &[],
+        ..RtkRule::DEFAULT
     },
     RtkRule {
         pattern: r"^psql(\s|$)",
