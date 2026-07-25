@@ -13,7 +13,7 @@
 #             run before the push; local + reversible (reinstall the prior tag).
 #
 # The real work lives in the companions: scripts/upgrade-check.sh, scripts/post-merge-verify.sh.
-# Orchestration contract: .claude/skills/rtk-upgrade-2/SKILL.md.
+# Orchestration contract: .claude/skills/rtk-upgrade/SKILL.md.
 #
 # Usage:  bash scripts/rtk-upgrade.sh {check | apply [ref] | install}
 #   ref — optional explicit merge target (default: upstream/develop). Per-invocation only.
@@ -27,16 +27,39 @@ bold()  { printf "\033[1m%s\033[0m\n" "$*"; }
 dim()   { printf "\033[2m%s\033[0m\n" "$*"; }
 fail()  { printf "\033[31m✗ %s\033[0m\n" "$*"; }
 green() { printf "\033[32m%s\033[0m\n" "$*"; }
+warn()  { printf "\033[33m%s\033[0m\n" "$*"; }
 
 usage() { echo "usage: bash scripts/rtk-upgrade.sh {check | apply [ref] | install}"; exit 2; }
 
-# ── Fork versioning (spec: .claude/skills/rtk-upgrade-2/SKILL.md § Versioning) ──
+# ── Fork versioning (spec: .claude/skills/rtk-upgrade/SKILL.md § Versioning) ──
 # Fork version = "<upstream/develop base>-dev-fork.<N>", mirrored in lockstep across
 # Cargo.toml, .release-please-manifest.json, and Cargo.lock's own `rtk` entry.
 # DRIFT GUARD: these three files are the canonical version sites. CHANGELOG.md is resolved
 # by the `merge=union` driver in .gitattributes and never reaches the conflict set. If a new
 # version-carrying file appears, add it here AND to post-merge-verify.sh's consistency gate.
 VERSION_FILES=(Cargo.toml .release-please-manifest.json Cargo.lock)
+
+# ── Fork-OWNED documents: take OURS on conflict ──
+# README.md documents the fork's own surface (the Azure `az` filter, the REMOVED MCP bridge,
+# the fork install story). Upstream README edits are essentially never wanted verbatim, so a
+# conflict there is resolved by discarding the upstream side — the same guarded
+# `git checkout --ours` used for the version files, with a visible log line.
+# NOT a `merge=union` driver: union is correct for CHANGELOG.md because a changelog is an
+# append-only chronological list, but on a README it interleaves both sides into duplicated
+# sections and contradictory prose.
+# DRIFT GUARD: only add a path here if the fork owns it OUTRIGHT. In particular do NOT add
+# docs/guide/resources/what-rtk-covers.md — it is a capability manifest that must reflect BOTH
+# upstream's newly added ecosystems AND the fork's deltas, so take-ours goes stale and lies
+# about coverage while take-theirs silently drops `az` and re-advertises the MCP bridge. It
+# gets a targeted hand-resolve reminder instead (see report_manual_conflict_hints).
+OURS_DOC_FILES=(README.md)
+
+# ── NEVER auto-resolved, under any circumstances ──
+# src/main.rs is the command routing table; src/hooks/hook_cmd.rs is the egress-hardening
+# surface. This fork is defined partly by what it REMOVED, so any union/take-either resolve
+# there can silently resurrect the MCP bridge or telemetry — a "clean" merge that reintroduces
+# egress. Conflict-and-stop is the correct behavior: they are absent from every auto-resolve
+# set above and must stay absent. They only get a reminder, never a resolution.
 
 cargo_ver() { grep -m1 '^version' "$1" 2>/dev/null | sed -E 's/.*"(.*)".*/\1/'; }
 
@@ -88,20 +111,27 @@ reconcile_version() {
 
 # Resolve a conflicted merge IFF every conflicted path is mechanically resolvable:
 #   Cargo.toml / manifest → take OURS (preserve fork-owned lines), version fixed by reconcile;
-#   Cargo.lock            → take OURS, rtk entry fixed by reconcile.
+#   Cargo.lock            → take OURS, rtk entry fixed by reconcile;
+#   README.md             → take OURS (fork-owned doc), logged loudly (see OURS_DOC_FILES).
 # Cargo.toml is taken OURS only if upstream changed nothing but the version line (else a real
 # dependency/manifest change needs human review). CHANGELOG.md is handled by merge=union and
 # never appears here. Any other conflict → caller aborts. Returns 0 if fully resolved, 1 else.
+# $1 = merge target ref (only used to print a review command).
 resolve_mechanical_conflicts() {
-  local u f base_toml theirs_toml
+  local target="${1:-upstream/develop}"
+  local u f kind base_toml theirs_toml
   u=$(git diff --name-only --diff-filter=U 2>/dev/null)
   [ -n "$u" ] || return 1
   while IFS= read -r f; do
     [ -z "$f" ] && continue
+    kind=""
     case " ${VERSION_FILES[*]} " in
-      *" $f "*) ;;                       # handled below
-      *) return 1 ;;                     # unhandled path → not mechanical
+      *" $f "*) kind="version" ;;        # handled below
     esac
+    case " ${OURS_DOC_FILES[*]} " in
+      *" $f "*) kind="ours-doc" ;;       # fork-owned doc → take ours, log it
+    esac
+    [ -n "$kind" ] || return 1           # unhandled path → not mechanical
     if [ "$f" = "Cargo.toml" ]; then
       # Guard: upstream side (:3) must differ from base (:1) ONLY in version line(s).
       base_toml=$(git show :1:Cargo.toml 2>/dev/null | grep -v '^version')
@@ -113,10 +143,37 @@ resolve_mechanical_conflicts() {
     fi
     git checkout --ours -- "$f" || return 1   # --ours = fork; rc!=0 (e.g. modify/delete) → abort
     git add -- "$f" || return 1
+    if [ "$kind" = "ours-doc" ]; then
+      warn "  ⚠ $f: upstream changed it — the upstream side was DISCARDED, fork version kept."
+      dim  "      Fork-owned doc (see OURS_DOC_FILES). Review manually if desired:"
+      dim  "        git diff ORIG_HEAD..$target -- $f"
+    fi
   done <<< "$u"
   # Nothing must remain unmerged before we complete the merge commit.
   [ -z "$(git diff --name-only --diff-filter=U 2>/dev/null)" ] || return 1
   return 0
+}
+
+# Targeted hand-resolve guidance for conflicts we deliberately REFUSE to auto-resolve.
+# Printed on the abort path so the human knows what must survive the manual resolution.
+# $1 = space-delimited conflicted-path list (with a leading/trailing space).
+# DRIFT GUARD: keep in sync with OURS_DOC_FILES and the never-auto note above.
+report_manual_conflict_hints() {
+  case " $1 " in
+    *" docs/guide/resources/what-rtk-covers.md "*)
+      warn "  ⚠ docs/guide/resources/what-rtk-covers.md is a capability MANIFEST — resolve by hand, keeping BOTH sides:"
+      echo "      • upstream's newly added ecosystems/filters (take-ours leaves the manifest stale and under-claiming)"
+      echo "      • the fork's deltas: Azure \`az\` IS present; the MCP bridge is REMOVED"
+      echo "        (take-theirs silently drops \`az\` and re-advertises the MCP bridge)"
+      ;;
+  esac
+  case " $1 " in
+    *" src/main.rs "*|*" src/hooks/hook_cmd.rs "*)
+      warn "  ⚠ src/main.rs / src/hooks/hook_cmd.rs are NEVER auto-resolved — routing table + egress-hardening surface."
+      echo "      This fork is defined partly by what it REMOVED. Resolve by hand and confirm the"
+      echo "      resolution does not resurrect the MCP bridge or telemetry."
+      ;;
+  esac
 }
 
 cmd_check() {
@@ -155,10 +212,20 @@ cmd_apply() {
     git fetch upstream develop 2>&1 | tail -3 || true
   fi
 
-  # Refuse to entangle a merge with uncommitted work.
-  if [ -n "$(git status --porcelain)" ]; then
-    fail "working tree not clean — commit or stash first. Tree untouched."
+  # Refuse to entangle a merge with uncommitted TRACKED work (modified or staged).
+  # Untracked files are deliberately NOT a blocker: git will not merge into them, and the
+  # abort path's reset cannot clobber them, so gating on them is strictly too tight — a stray
+  # agent worktree under .claude/worktrees/ once refused an otherwise-clean apply. Warn only.
+  if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+    fail "tracked changes present (modified or staged) — commit or stash first. Tree untouched."
+    git status --short --untracked-files=no | head -20 | sed 's/^/      /'
     exit 1
+  fi
+  local untracked
+  untracked=$(git ls-files --others --exclude-standard 2>/dev/null | head -5)
+  if [ -n "$untracked" ]; then
+    warn "  ⚠ untracked files present — not a blocker (they cannot conflict with the merge):"
+    printf '%s\n' "$untracked" | sed 's/^/      /'
   fi
 
   # Read-only preview at merge time — ADVISORY only. merge-tree --name-only does not cleanly
@@ -180,9 +247,9 @@ cmd_apply() {
   else
     # Conflict. Resolve ONLY the mechanical version/lock conflicts (fork-preserving); abort
     # on anything else, restoring the pre-merge tree exactly as the old behavior did.
-    if resolve_mechanical_conflicts; then
+    if resolve_mechanical_conflicts "$target"; then
       if git commit --no-edit >/dev/null 2>&1; then
-        green "✓ Merge committed (version conflicts auto-resolved, fork lines preserved, NOT pushed)."
+        green "✓ Merge committed (mechanical conflicts auto-resolved, fork lines preserved, NOT pushed)."
       else
         git merge --abort 2>/dev/null || true
         fail "could not complete merge commit after resolution. Tree restored to pre-merge HEAD."
@@ -191,8 +258,9 @@ cmd_apply() {
     else
       local conflicts
       conflicts=$(git diff --name-only --diff-filter=U 2>/dev/null | tr '\n' ' ')
-      git merge --abort 2>/dev/null || true
       fail "merge aborted — non-mechanical conflicts in: ${conflicts:-<unknown>}. Tree restored to pre-merge HEAD."
+      report_manual_conflict_hints "$conflicts"
+      git merge --abort 2>/dev/null || true
       exit 1
     fi
   fi

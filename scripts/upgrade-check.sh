@@ -58,8 +58,14 @@ green()  { printf "\033[32m%s\033[0m\n" "$*"; }
 source "$REPO_ROOT/scripts/lib/master-only.sh"
 
 bold "=== RTK upgrade-check ==="
+# The branch actually checked out. `apply` merges upstream into THIS branch, so the merge
+# preview below is computed against it (not against a hardcoded `develop`).
+CUR_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+if [ "$CUR_BRANCH" = "HEAD" ]; then
+  CUR_BRANCH="detached@$(git rev-parse --short HEAD)"
+fi
 echo "repo: $REPO_ROOT"
-echo "branch: $(git rev-parse --abbrev-ref HEAD)"
+echo "branch: $CUR_BRANCH"
 echo "fork head: $(git log -1 --oneline HEAD)"
 echo
 
@@ -79,6 +85,16 @@ MASTER_BEHIND=$(git rev-list --count develop..upstream/master 2>/dev/null || ech
 echo "develop behind upstream/develop: $DEV_BEHIND commits  (develop is the merge source)"
 echo "develop ahead  of upstream/develop: $DEV_AHEAD commits"
 dim "develop behind upstream/master:  $MASTER_BEHIND commits  (broken down in Master-only section below)"
+# What `apply` will ACTUALLY merge into. On develop this equals DEV_BEHIND; on any other branch
+# it does not, and every "what does this merge bring in" question below keys on THIS, not on
+# DEV_BEHIND. DRIFT GUARD: the two develop lines above are sync-source bookkeeping only — they
+# must never gate a decision. Found 2026-07-24: the CURRENT early-exit gated on DEV_BEHIND, so a
+# detached pre-merge worktree 231 commits behind upstream reported CURRENT and short-circuited
+# before the merge preview it existed to show.
+MERGE_BEHIND=$(git rev-list --count HEAD..upstream/develop 2>/dev/null || echo "?")
+if [ "$CUR_BRANCH" != "develop" ]; then
+  hot "$CUR_BRANCH behind upstream/develop: $MERGE_BEHIND commits  (apply merges into THIS branch)"
+fi
 # Version delta — apply will retrack fork to <develop-base>-dev-fork.N (see SKILL.md § Versioning).
 FORK_VER=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')
 UP_DEV_VER=$(git show upstream/develop:Cargo.toml 2>/dev/null | grep -m1 '^version' | sed -E 's/.*"(.*)".*/\1/')
@@ -108,8 +124,8 @@ emit_master_alert() {
 }
 
 # The fork syncs from upstream/develop; master-ahead is informational only, never a merge source.
-if [ "$DEV_BEHIND" = "0" ]; then
-  green "✓ Fork is current vs upstream/develop (the merge source)."
+if [ "$MERGE_BEHIND" = "0" ]; then
+  green "✓ $CUR_BRANCH is current vs upstream/develop (the merge source)."
   echo
   echo "RECOMMENDATION: CURRENT"
   emit_master_alert
@@ -117,8 +133,8 @@ if [ "$DEV_BEHIND" = "0" ]; then
 fi
 
 bold "── New upstream/develop commits ──"
-if [ "$DEV_BEHIND" != "0" ]; then
-  git log --pretty=format:'%h %ai %s' develop..upstream/develop
+if [ "$MERGE_BEHIND" != "0" ]; then
+  git log --pretty=format:'%h %ai %s' HEAD..upstream/develop
   echo
 else
   dim "(none)"
@@ -127,18 +143,18 @@ echo
 
 bold "── Files touched by new upstream/develop commits ──"
 dim "(three-dot upstream-side delta since the merge-base — only what the merge brings in; fork-only files are NOT listed)"
-# THREE-DOT (develop...upstream/develop): files changed on the UPSTREAM side since the
-# merge-base — i.e. exactly what the merge brings in. Two-dot (develop..upstream/develop)
+# THREE-DOT (HEAD...upstream/develop): files changed on the UPSTREAM side since the
+# merge-base — i.e. exactly what the merge brings in. Two-dot (HEAD..upstream/develop)
 # symmetrically diffs the two endpoints and renders the fork's own commits as huge
 # "deletions" (FORK_NOTES.md, scripts/, az_cmd.rs, …) — misleading, and it once triggered
-# a false-alarm investigation. This list mirrors the merge-tree preview below.
-git diff --stat develop...upstream/develop | tail -40
+# a false-alarm investigation. Keyed on HEAD, matching the preview and the merge apply runs.
+git diff --stat HEAD...upstream/develop | tail -40
 echo
 
 bold "── Commits touching HIGH-TRAFFIC filter paths ──"
 HOT_HITS=0
 for path in "${HOT_PATHS[@]}"; do
-  HITS=$(git log --oneline develop..upstream/develop -- "$path" 2>/dev/null || true)
+  HITS=$(git log --oneline HEAD..upstream/develop -- "$path" 2>/dev/null || true)
   if [ -n "$HITS" ]; then
     hot "  $path"
     while IFS= read -r line; do
@@ -155,12 +171,22 @@ if [ "$HOT_HITS" = "0" ]; then
 fi
 echo
 
-# Read-only 3-way merge simulation — authoritative answer to "will this conflict?".
+# Read-only 3-way merge simulation — authoritative answer to "will this conflict?" FOR THE
+# BRANCH IT NAMES.
+# Computed against HEAD, deliberately NOT against `develop`: `apply` merges upstream/develop
+# into whatever branch is checked out. A preview hardcoded to `develop` answers a different
+# question than the one `apply` acts on — on 2026-07-24 it reported 2 conflicts from a feature
+# branch while the real merge produced 4 (it missed src/main.rs and src/hooks/hook_cmd.rs).
+# DRIFT GUARD: the divergence / commit-listing / hot-path sections above intentionally stay on
+# `develop` — that is the sync SOURCE bookkeeping. Only this preview follows HEAD.
 # Needs git >= 2.38. Exit 0 = clean (prints a bare tree OID); exit 1 = conflicts
 # (OID line followed by the conflicted paths under --name-only).
 bold "── Merge preview (read-only dry run) ──"
+if [ "$CUR_BRANCH" != "develop" ]; then
+  hot "  preview computed for branch $CUR_BRANCH (not develop) — apply will merge into this branch"
+fi
 CONFLICTS=""
-MERGE_OUT=$(git merge-tree --write-tree --name-only develop upstream/develop 2>/dev/null) && MT_RC=0 || MT_RC=$?
+MERGE_OUT=$(git merge-tree --write-tree --name-only HEAD upstream/develop 2>/dev/null) && MT_RC=0 || MT_RC=$?
 if [ "$MT_RC" = "0" ]; then
   green "  ✓ Clean 3-way merge — zero conflicts."
 elif [ "$MT_RC" = "1" ]; then
@@ -187,7 +213,7 @@ emit_verification_block() {
   bold "── Post-merge verification (copy-paste) ──"
   echo "  cargo fmt --all && cargo clippy --all-targets && cargo test --all"
   local subjects
-  subjects=$(git log --pretty=format:'%h %s' develop..upstream/develop 2>/dev/null)
+  subjects=$(git log --pretty=format:'%h %s' HEAD..upstream/develop 2>/dev/null)
   if printf '%s\n' "$subjects" | grep -qiE 'sigpipe|broken.?pipe'; then
     echo "  # SIGPIPE fix detected → must NOT exit 134:"
     echo "      target/release/rtk grep -rn 'fn ' src/ | head -3 >/dev/null; echo \$?"
@@ -201,7 +227,7 @@ emit_verification_block() {
 
 bold "── Recommendation ──"
 if [ "$HOT_HITS" = "0" ]; then
-  green "DEFER. Upstream has $DEV_BEHIND new commits but none touch high-traffic filter paths."
+  green "DEFER. Upstream has $MERGE_BEHIND new commits but none touch high-traffic filter paths."
   echo "Merging now buys no behavioral value for this user's top commands."
   if [ -n "$CONFLICTS" ] && [ "$CONFLICTS" != "?" ]; then
     echo "(Merge would also need conflict resolution — see preview above.)"

@@ -28,8 +28,10 @@ procedure, not vague suspicion.
 
 ## RTK fork facts (version-specific — rot-prone, kept out of the always-on layer)
 
-- Fork: **v0.42.2-dev-fork.1** (upstream/develop at 0.42.2; upstream/master at 0.42.4).
-  Version scheme + sync mechanics: `scripts/rtk-upgrade.sh` reconcile (spec in rtk-upgrade-2/SKILL.md).
+- Fork version is **`<upstream/develop base>-dev-fork.N`**. Do NOT hardcode the numbers here —
+  they rot at every sync. `bash scripts/rtk-upgrade.sh check` prints all three live (fork,
+  upstream/develop, upstream/master) in its `── Divergence ──` block. Version scheme + sync
+  mechanics: `scripts/rtk-upgrade.sh` reconcile (spec in rtk-upgrade/SKILL.md).
 - The PreToolUse hook is `rtk hook claude`, keying on the **bare leading command name**:
   - pipes rewrite the **first segment only** (`cat f | grep x` → `rtk read f | grep x`);
   - `&&` rewrites **each segment** (`git status && ls` → `rtk git status && rtk ls`);

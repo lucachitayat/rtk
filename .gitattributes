@@ -5,5 +5,5 @@ tests/fixtures/** -text
 
 # CHANGELOG.md diverges permanently: the fork keeps its own -dev-fork sections that upstream
 # never has. union merge keeps BOTH sides' lines on conflict so a fork sync neither drops the
-# fork's authored history nor upstream's new entries. (Spec: rtk-upgrade-2/SKILL.md § Versioning.)
+# fork's authored history nor upstream's new entries. (Spec: rtk-upgrade/SKILL.md § Versioning.)
 CHANGELOG.md merge=union
