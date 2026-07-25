@@ -151,6 +151,13 @@ pass/fail summary). Don't restate the full diff stat unless asked.
 
 ## Maintenance
 
+**Before changing a guard, reproduce it firing.** Most of both scripts only runs when something
+is wrong, so in the repo's steady state a broken guard is indistinguishable from a working one —
+two shipped defective on 2026-07-24 and neither showed up in a normal run. `debug/` holds
+scenario builders (`simulate-stale-origin.sh`, `simulate-behind-upstream.sh`, both
+`setup`/`teardown`, both local-only) that construct the triggering state. Run the harness before
+and after your change; see `debug/README.md`.
+
 The decision pivots — `HOT_PATHS` (in `scripts/upgrade-check.sh`), the fork-invariant checks
 (in `scripts/post-merge-verify.sh`), and the `VERSION_FILES` set (in `scripts/rtk-upgrade.sh`) —
 are hand-maintained and each carries a `DRIFT GUARD` comment. When you add or remove a fork
