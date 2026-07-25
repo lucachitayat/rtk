@@ -206,7 +206,15 @@ inv_exists "FORK_NOTES.md"                             "FORK_NOTES.md present"
 inv_exists "Cargo.toml"                       "conflict-marker scan target present (Cargo.toml)"
 inv_exists "Cargo.lock"                       "conflict-marker scan target present (Cargo.lock)"
 inv_exists ".release-please-manifest.json"    "conflict-marker scan target present (.release-please-manifest.json)"
-if grep -rlqE '^(<{7}|>{7})' src/ Cargo.toml Cargo.lock .release-please-manifest.json 2>/dev/null; then fail "conflict markers present in src/ or version files"; RC=1; else pass "no conflict markers in src/ or version files"; fi
+# scripts/ is in the scanned set because it was NOT, and that cost a commit: resolving the
+# develop→harden merge of THIS file left a marker pair behind in it and the gate reported
+# "no conflict markers" — the domain excluded the very script doing the scanning. The
+# verification files are the ones a merge conflict hurts most, since a broken gate reports
+# green. build.rs is in for the same reason — it carries the compile-time egress guard. Docs
+# stay out: they carry setext headings and fenced diff samples that look like markers.
+inv_exists "scripts"                          "conflict-marker scan target present (scripts/)"
+inv_exists "build.rs"                         "conflict-marker scan target present (build.rs)"
+if grep -rlqE '^(<{7}|>{7})' src/ scripts/ build.rs Cargo.toml Cargo.lock .release-please-manifest.json 2>/dev/null; then fail "conflict markers present in src/, scripts/, build.rs or version files"; RC=1; else pass "no conflict markers in src/, scripts/, build.rs or version files"; fi
 # Fork version marker — the §5 base-version check strips '-fork.N', so assert it survives here.
 if grep -m1 '^version' Cargo.toml | grep -qF -- '-fork'; then pass "Cargo.toml version carries -fork marker"; else fail "Cargo.toml lost -fork version suffix"; RC=1; fi
 echo
