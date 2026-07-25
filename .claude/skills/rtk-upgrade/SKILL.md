@@ -116,6 +116,14 @@ pull+reinstall. All that determinism lives in the scripts, so it never has to li
    binary works, then publish).
 8. **Install `✓`** → ask the user to confirm the push (AskUserQuestion). On confirm,
    `git push origin <branch>`. Otherwise leave it committed-unpushed.
+9. **If the sync touched `harden/no-egress`** → the sync is NOT done until
+   `bash scripts/export-enterprise.sh harden/no-egress` passes. The gate proves the enterprise
+   build *compiles*; only the export's step-6a scan proves telemetry was actually stripped, and a
+   surviving reference is typically a bare string that compiles fine. On 2026-07-24 upstream
+   relocated `RTK_META_COMMANDS` into `src/core/constants.rs` and left `"telemetry"` ungated,
+   which the gate passed and the export caught. Publishing (`git push --force origin main` from
+   the export dir) is a separate, always-confirmed step — the script never touches a remote, and
+   the enterprise repo is a single regenerated orphan commit by design.
 
 ## Rules (the whole point — follow exactly)
 
