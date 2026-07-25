@@ -6,6 +6,74 @@ Newest entries on top.
 
 ---
 
+## 2026-07-24 — ROLLBACK POINT for the verification-surface hardening
+
+Two annotated tags mark the state **before** the work described in the entry below. Both are
+pushed to `origin`.
+
+```bash
+# Inspect before undoing anything
+git diff rollback/2026-07-24-pre-verification-hardening-harden..harden/no-egress
+git diff rollback/2026-07-24-pre-verification-hardening-develop..develop
+
+# Full undo, per branch (destructive — both branches are pushed, so this needs --force-with-lease)
+git checkout harden/no-egress && git reset --hard rollback/2026-07-24-pre-verification-hardening-harden
+git checkout develop        && git reset --hard rollback/2026-07-24-pre-verification-hardening-develop
+```
+
+| | pre-work anchor (stable) | post-work |
+|---|---|---|
+| `harden/no-egress` | `68f718f` | branch tip (`cd63dc1` when this was written, plus this ledger commit) |
+| `develop` | `9f41068` | branch tip (`96db1db` when this was written) |
+
+Only the left column is worth hardcoding — it is what the tags point at, and it does not move.
+This ledger lives on `harden/no-egress`; `develop`'s copy of this file does not carry it, which
+is the normal state for a per-branch log.
+
+Nothing outside the repo changed: the published distro at `lucachitayat/rtk-enterprise` was **not**
+re-exported or force-pushed, so it still sits at its earlier orphan commit built from `7a4e10f`.
+There is nothing to undo there.
+
+### Scope ledger — what was asked for, and what grew
+
+The work came in wider than the request. Recorded honestly so the widening can be reversed
+selectively rather than all-or-nothing. Ordered most-likely-to-least-likely to want gone.
+
+**Beyond the request** — each defensible on its own, none of it asked for:
+
+1. **The `insta` cleanup across five `.claude/` files** (in `ffcd87c`) — largest edit by volume
+   (123 lines in `agents/rtk-testing-specialist.md`, 26 in `skills/tdd-rust/SKILL.md`) and the
+   least connected to this branch's purpose. The plan's ledger named
+   `.claude/rules/cli-testing.md`; that file turned out to contain no `insta` claim at all, so
+   the fix was redirected to the files that did. Undo just this:
+   `git checkout 68f718f -- .claude/agents/ .claude/skills/tdd-rust/ .claude/commands/tech/codereview.md .claude/rules/rust-patterns.md`
+2. **`build_support/egress_guard.rs` + `tests/egress_guard_test.rs`** (in `7f209d5`) — a new
+   top-level directory, a new shipped file, two new allowlist entries, and 12 tests. Not in the
+   plan; added because the plan's stated positive control for the egress guard turned out never
+   to execute. This is the most structural addition. Undoing it means folding the logic back into
+   `build.rs` and accepting that the guard has no running control.
+3. **The `cargo:warning` announcements and export step 6e** (in `7f209d5`) — changes what every
+   distro build PRINTS. Not in the plan; added because the plan's verification method (inject
+   `ureq` into the lockfile) was measured not to work. Removing the announcements also requires
+   removing 6e, which depends on them.
+4. **`75579f4`** `cd "$REPO_ROOT" || exit` — one line, found by shellcheck, not requested.
+5. **`96db1db`** conflict-marker scan widened to `scripts/` and `build.rs` — arose from my own
+   error (a marker pair reached a commit because the scan's domain excluded the scanning script).
+6. **`17dd1bb`** corrects a comment that item 3 made stale — a consequence of 3, not independent.
+
+**As requested:** `8fd4276` (task 1), `21593e9` (task 2), `bad4f5a` (task 3 + plan change 6,
+including the `rg_available` instrumentation the plan specifies at its five definitions),
+`92ae3a9` + `9c4e41a` (plan change 2), `ee86d0c` (plan change 3), the manifest-probe gate inside
+`7f209d5` (plan change 9), and `b56df82` + the `AGENTS.md` / `debug/README.md` parts of `ffcd87c`
+(the docs overlay).
+
+**Reverting anything under `scripts/post-merge-verify.sh`, `.github/workflows/ci.yml`,
+`scripts/test-master-only.sh` or `tests/*` must be done on `develop` and merged forward.** Those
+files are shared and byte-identical on both branches; harden never merges back into develop, so a
+revert applied only to harden re-introduces the drift that `8fd4276` existed to remove.
+
+---
+
 ## 2026-07-24 (later still) — Executing the hardening plan: seven more false negatives
 
 Implemented the reviewed plan. Every item landed, and the work produced **seven more false
