@@ -123,10 +123,14 @@ bold "── Release build ──"
 #
 # Scope, deliberately narrow — two assertions, both green by construction on a healthy tree:
 #   1. the release build under --features enterprise COMPILES (the actual distro risk).
-#      NOTE: this does NOT exercise build.rs's egress guard — check_enterprise_egress()
-#      returns early unless CARGO_FEATURE_TELEMETRY is ALSO set (build.rs), and
-#      `enterprise = []` activates nothing on its own. This step only proves the
-#      enterprise feature set compiles, nothing about the lockfile scan;
+#      NOTE: this does NOT exercise build.rs's egress lockfile scan, and the reason changed
+#      on 2026-07-24. It is no longer "the guard returns early unless CARGO_FEATURE_TELEMETRY
+#      is set" — the guard now gates on whether the manifest DECLARES a telemetry feature. The
+#      dev fork declares one, so Cargo.lock legitimately carries ureq and rustls even with the
+#      feature off, and the guard deliberately SKIPS here rather than being permanently red.
+#      Watch the build output say so: `EGRESS GUARD: SKIPPED`. The scan runs in the exported
+#      distribution, where no such feature exists, and export step 6e asserts that it did.
+#      This step only proves the enterprise feature set compiles;
 #   2. the fork-only enterprise/hardening tests pass under that feature.
 # We do NOT run the whole suite with --features enterprise. auto_allow_enabled() is
 # `!cfg!(feature = "enterprise") && env RTK_NO_AUTO_ALLOW unset`, so under the feature it is
