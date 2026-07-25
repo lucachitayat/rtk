@@ -28,6 +28,18 @@ OUT_DIR="${2:-/tmp/rtk-enterprise-export}"
 # Resolve to the actual repo root (script may be invoked from anywhere).
 REPO_ROOT="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 
+# The residual-telemetry detector lives in a lib so scripts/test-export-detectors.sh can probe
+# the EXACT command run below rather than a hand-copied approximation of it.
+# shellcheck source=lib/export-scan.sh
+source "${REPO_ROOT}/scripts/lib/export-scan.sh"
+
+# Machine-readable removal manifest: one term per line, appended by step 2a (deleted-file
+# stems) and 2c (removed dependency / feature identifiers), consumed by step 6a to derive the
+# residual pattern. Deliberately OUTSIDE OUT_DIR — step 7 runs `git add -A` in there, so
+# anything written inside would ship to customers.
+MANIFEST_TERMS="$(mktemp -t rtk-export-terms.XXXXXX)"
+trap 'rm -f "${MANIFEST_TERMS}"' EXIT
+
 echo "=== RTK Enterprise Export ==="
 echo "  SOURCE_REF : ${SOURCE_REF}"
 echo "  OUT_DIR    : ${OUT_DIR}"
@@ -59,6 +71,11 @@ do
     if [[ -f "${target}" ]]; then
         rm "${target}"
         DELETED_FILES+=("${f}")
+        # Removal manifest: the deleted file's stem is by construction a term that must not
+        # survive anywhere in the shipped tree (telemetry, telemetry_cmd). Step 6a unions
+        # these with its hardcoded floor, so adding a file to this loop automatically widens
+        # the residual scan instead of requiring someone to remember to widen it.
+        basename "${f}" .rs >> "${MANIFEST_TERMS}"
         echo "      Deleted: ${f}"
     else
         echo "      WARN: ${f} not found in export (already absent?)"
@@ -406,26 +423,35 @@ PYEOF
 # 2c. Cargo.toml: remove ureq / getrandom dep lines, telemetry feature line,
 #     and update default feature to enterprise.
 echo "      Patching Cargo.toml …"
-python3 - "${OUT_DIR}/Cargo.toml" <<'PYEOF'
+python3 - "${OUT_DIR}/Cargo.toml" "${MANIFEST_TERMS}" <<'PYEOF'
 import sys
 import re
 
 path = sys.argv[1]
+# Removal manifest (append-only). Every dependency or feature this step strips is, by
+# construction, a term step 6a must not find anywhere in the shipped tree — so record the bare
+# identifier here rather than relying on someone remembering to add it to 6a's pattern. Only
+# the identifier: 6a validates each derived term and rejects anything that is not one.
+terms_path = sys.argv[2]
 with open(path, "r") as fh:
     lines = fh.readlines()
 
 out = []
 removed = []
+terms = []
 for line in lines:
     stripped = line.strip()
     # Remove ureq and getrandom dependency lines (optional dep declarations).
-    if re.match(r'^(ureq|getrandom)\s*=', stripped):
+    dep = re.match(r'^(ureq|getrandom)\s*=', stripped)
+    if dep:
         removed.append(("dep", stripped))
+        terms.append(dep.group(1))
         continue
     # Remove the telemetry = [...] feature line and any immediately-preceding
     # comment lines that reference telemetry/ureq/getrandom (stale dev notes).
     if re.match(r'^telemetry\s*=', stripped):
         removed.append(("feature", stripped))
+        terms.append("telemetry")
         # Walk back in `out` and remove trailing comment lines that mention
         # these removed deps (they are stale internal notes, not API docs).
         while out and re.match(r'^\s*#.*(?:telemetry|ureq|getrandom)', out[-1]):
@@ -440,8 +466,13 @@ for line in lines:
 with open(path, "w") as fh:
     fh.writelines(out)
 
+with open(terms_path, "a") as fh:
+    for t in terms:
+        fh.write(t + "\n")
+
 for (kind, val) in removed:
     print(f"        Cargo.toml [{kind}] removed/updated: {val}")
+print(f"        Removal manifest: recorded {len(terms)} residual term(s): {', '.join(sorted(set(terms))) or '(none)'}")
 PYEOF
 
 # ── Step 3: Write UPSTREAM.md ─────────────────────────────────────────────────
@@ -684,40 +715,40 @@ echo "[6/8] Verifying …"
 # was clean the whole time; the scan simply never looked at the largest residual.
 # A detector is only as good as its domain — scanning a subset of what ships and
 # reporting PASS is an absence assertion about a place you did not examine.
-echo "      [6a] Checking for residual telemetry refs across the shipped tree …"
-if ! command -v rg &>/dev/null; then
-    echo "FATAL: 'rg' (ripgrep) is required for verification but was not found in PATH." >&2
-    echo "       Install with: cargo install ripgrep  OR  brew install ripgrep" >&2
-    exit 1
-fi
-# DOMAIN CONTROL: assert the target exists and is non-empty BEFORE trusting an empty
-# result. rg exits 2 on a missing path, `|| true` swallows it, and an empty GREP_HIT
-# then reads as "clean" — a verification that never ran, reported as a pass.
-if [[ ! -d "${OUT_DIR}" ]] || [[ -z "$(find "${OUT_DIR}" -type f -name '*.rs' -print -quit)" ]]; then
-    echo "FATAL: cannot verify — ${OUT_DIR} is missing or contains no source files." >&2
-    exit 1
-fi
-# NOT `-rniE`: those are grep's flags. In ripgrep `-r` is --replace and swallows the next
-# token, so `-rniE` meant "replace every match with the literal niE" — losing -n (line
-# numbers) and -i (case-insensitivity), and printing `niE` in place of the offending text.
-# On 2026-07-24 that reported `constants.rs: "niE",` for a residual `"telemetry",`, hiding
-# the actual cause. Recursion is implicit when the argument is a directory.
+# The detector, its term list, its glob allowlist and its three-outcome contract all live in
+# scripts/lib/export-scan.sh, sourced at the top. Nothing about the scan is written twice:
+# scripts/test-export-detectors.sh plants canaries and probes the SAME functions, so its
+# positive controls are controls on the command that actually ships this tree.
 #
-# DRIFT GUARD: these --glob exclusions must mirror the step-4 ALLOWLIST. Each is a file
-# whose mention is legitimate (build.rs's FORBIDDEN_CRATES denylist, deny.toml's ban entry,
-# getrandom arriving transitively in Cargo.lock, and the enterprise-authored docs that
-# explain telemetry was removed). Adding a glob here stops protecting that file.
-GREP_HIT="$(rg -n -i 'telemetry|maybe_ping|ureq|TelemetryConfig|getrandom' "${OUT_DIR}" \
-    --glob '!Cargo.lock' --glob '!Cargo.toml' --glob '!build.rs' --glob '!deny.toml' \
-    --glob '!DISCLAIMER.md' --glob '!REVIEWER-README.md' --glob '!SECURITY-HARDENING.md' \
-    --glob '!CHANGELOG.md' --glob '!UPSTREAM.md' \
-    2>/dev/null || true)"
-if [[ -n "${GREP_HIT}" ]]; then
-    echo "FATAL: residual references found in the shipped tree:" >&2
-    echo "${GREP_HIT}" >&2
-    exit 1
-fi
-echo "      PASS — no residual telemetry/ureq/getrandom/maybe_ping/TelemetryConfig in the shipped tree"
+# The pattern is the UNION of a hardcoded floor and the terms derived from what steps 2a/2c
+# actually removed — never a replacement for the floor. Residual limit, stated honestly: the
+# derivation is bounded by what 2a/2b/2c removed, so a leak whose vocabulary is disjoint from
+# the removed code stays invisible to it. Union-with-hardcoded keeps the pattern monotonically
+# additive, so widening it can never narrow it.
+RESIDUAL_PATTERN="$(residual_pattern "${MANIFEST_TERMS}")"
+echo "      [6a] Checking for residual refs across the shipped tree …"
+echo "           pattern: ${RESIDUAL_PATTERN}"
+echo "           derived from the removal manifest: $(sort -u "${MANIFEST_TERMS}" | paste -sd ',' - || true)"
+# Three outcomes, not two: CLEAN (0) / FOUND (1) / CANNOT-VERIFY (2). `set +e` around the call
+# because a bare assignment from a non-zero substitution would abort before the case runs, and
+# CANNOT-VERIFY must be reported as itself rather than as a shell abort.
+set +e
+GREP_HIT="$(residual_scan "${OUT_DIR}" "${RESIDUAL_PATTERN}")"
+SCAN_RC=$?
+set -e
+case "${SCAN_RC}" in
+    0) echo "      PASS — no residual ${RESIDUAL_PATTERN} anywhere in the shipped tree" ;;
+    1)
+        echo "FATAL: residual references found in the shipped tree:" >&2
+        echo "${GREP_HIT}" >&2
+        exit 1
+        ;;
+    *)
+        echo "FATAL: cannot verify the shipped tree — see the reason above. An unverifiable" >&2
+        echo "       egress claim is not a passing one." >&2
+        exit 1
+        ;;
+esac
 
 # 6b. cargo build --release succeeds.
 echo "      [6b] Running cargo build --release …"
@@ -794,8 +825,12 @@ printf "│  Whole files deleted     : %-41s │\n" "${#DELETED_FILES[@]}"
 echo "│  Attribute-gated items   : (see stripper output above)              │"
 echo "├─────────────────────────────────────────────────────────────────────┤"
 echo "│  Verification                                                        │"
-echo "│    grep residual (all files under src/)   : PASS (empty)            │"
+# These labels describe what the steps above actually did. "all files under src/" survived here
+# for months after 6a's scope was still src/-only — and then stayed wrong in the other
+# direction after 6a was widened. A summary is the last thing anyone reads and the first thing
+# that goes stale, so it names the real domain and does not claim the egress guard ran.
+echo "│    residual scan (whole shipped tree)     : PASS (empty)            │"
 echo "│    cargo build --release                  : PASS                    │"
-echo "│    cargo tree | grep ureq                 : PASS (empty)            │"
-echo "│    cargo build --features enterprise      : PASS                    │"
+echo "│    cargo tree --target all | grep ureq    : PASS (empty)            │"
+echo "│    cargo build --features enterprise      : PASS (compiles only)    │"
 echo "└─────────────────────────────────────────────────────────────────────┘"
