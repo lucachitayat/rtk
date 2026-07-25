@@ -7,7 +7,8 @@
 #
 # Workflow:
 #   1. Quality gate    — cargo fmt --check, clippy --all-targets, test --all
-#   2. Release build   — needed for behavior spot-checks
+#   2. Release build   — enterprise distro build + gated tests (skipped where the feature
+#                        doesn't exist), then the default build needed for spot-checks
 #   3. Behavior checks — SIGPIPE (no SIGABRT on broken pipe), gh no-id forwarding
 #   4. Divergence      — confirm fully merged (behind upstream = 0), fork commits retained
 #   5. Version sanity  — fork Cargo.toml version base >= upstream
@@ -60,6 +61,42 @@ echo
 
 # ── 2. Release build (needed for behavior checks) ───────────────────────────────
 bold "── Release build ──"
+
+# Enterprise distro build. Without this, the FIRST thing that catches a merge which broke
+# `--features enterprise` is export-enterprise.sh step 6d — i.e. at release time, long after
+# the sync. Deliberately runs BEFORE the default release build: both write
+# target/release/rtk, and §3's behavior spot-checks must exercise the DEFAULT binary.
+#
+# Scope, deliberately narrow — two assertions, both green by construction on a healthy tree:
+#   1. the release build under --features enterprise COMPILES (the actual distro risk, and
+#      what exercises build.rs's egress guard);
+#   2. the fork-only enterprise/hardening tests pass under that feature.
+# We do NOT run the whole suite with --features enterprise. auto_allow_enabled() is
+# `!cfg!(feature = "enterprise") && env RTK_NO_AUTO_ALLOW unset`, so under the feature it is
+# false BY DESIGN and ~7 upstream auto-allow tests fail there by construction. A gate step
+# that is permanently red is worse than no gate step at all.
+# Both invocations run with RTK_NO_AUTO_ALLOW unset so a dev shell that exports it (the
+# runtime equivalent of the same opt-out) cannot poison the default-build comparison.
+#
+# DRIFT GUARD: `develop` carries no [features] block at all and this same script runs there,
+# where `--features enterprise` would hard-fail with an unknown-feature error. Gate on the
+# Cargo.toml probe below — NEVER on the branch name. Also update the test filter if the
+# fork-only tests move out of src/hooks/hook_cmd/tests/fork_tests.rs.
+if awk '/^\[features\]/{f=1;next} /^\[/{f=0} f && /^[[:space:]]*enterprise[[:space:]]*=/{ok=1} END{exit !ok}' Cargo.toml; then
+  if env -u RTK_NO_AUTO_ALLOW cargo build --release --features enterprise >/tmp/pmv_ent_build.txt 2>&1; then
+    pass "cargo build --release --features enterprise"
+  else
+    fail "enterprise build (digest below; full: /tmp/pmv_ent_build.txt)"; digest /tmp/pmv_ent_build.txt; RC=1
+  fi
+  if env -u RTK_NO_AUTO_ALLOW cargo test --bin rtk --features enterprise hook_cmd::tests::fork_tests >/tmp/pmv_ent_test.txt 2>&1; then
+    pass "enterprise-gated tests ($(grep -hoE '[0-9]+ passed' /tmp/pmv_ent_test.txt | head -1) — hook_cmd fork_tests)"
+  else
+    fail "enterprise-gated tests (digest below; full: /tmp/pmv_ent_test.txt)"; digest /tmp/pmv_ent_test.txt; RC=1
+  fi
+else
+  dim "  (skipped — no 'enterprise' feature in Cargo.toml)"
+fi
+
 if cargo build --release >/tmp/pmv_build.txt 2>&1; then pass "cargo build --release"; else fail "release build (digest below; full: /tmp/pmv_build.txt)"; digest /tmp/pmv_build.txt; RC=1; fi
 BIN="target/release/rtk"
 echo
