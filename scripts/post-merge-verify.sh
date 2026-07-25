@@ -33,6 +33,12 @@ digest() { grep -nE 'error\[|error:|^error|warning:|^test .* FAILED|--> ' "$1" 2
 
 # Fork-invariant helpers (quiet — never dump matched lines into output).
 inv_exists() { if [ -e "$1" ]; then pass "$2"; else fail "$2 (missing: $1)"; RC=1; fi; }
+# DRIFT GUARD: inv_absent's detector (`[ -e ]`) is total — it cannot silently misbehave.
+# The drift surface is the PATH ARGUMENT, not the check itself. Both MCP absence assertions
+# below (the "MCP bridge dir removed" / "MCP rewrite cmd removed" checks) hardcode
+# "src/mcp" and "src/hooks/mcp_rewrite_cmd.rs"; an upstream
+# reintroduction of the bridge under a different path/name passes both silently. Widen the
+# path set here if upstream ever renames it — do NOT add a canary to inv_absent itself.
 inv_absent() { if [ -e "$1" ]; then fail "$2 (should be absent: $1)"; RC=1; else pass "$2"; fi; }
 inv_grep()   { if grep -rlqF -- "$1" "$2" 2>/dev/null; then pass "$3"; else fail "$3 (pattern gone from $2)"; RC=1; fi; }
 
@@ -68,8 +74,11 @@ bold "── Release build ──"
 # target/release/rtk, and §3's behavior spot-checks must exercise the DEFAULT binary.
 #
 # Scope, deliberately narrow — two assertions, both green by construction on a healthy tree:
-#   1. the release build under --features enterprise COMPILES (the actual distro risk, and
-#      what exercises build.rs's egress guard);
+#   1. the release build under --features enterprise COMPILES (the actual distro risk).
+#      NOTE: this does NOT exercise build.rs's egress guard — check_enterprise_egress()
+#      returns early unless CARGO_FEATURE_TELEMETRY is ALSO set (build.rs), and
+#      `enterprise = []` activates nothing on its own. This step only proves the
+#      enterprise feature set compiles, nothing about the lockfile scan;
 #   2. the fork-only enterprise/hardening tests pass under that feature.
 # We do NOT run the whole suite with --features enterprise. auto_allow_enabled() is
 # `!cfg!(feature = "enterprise") && env RTK_NO_AUTO_ALLOW unset`, so under the feature it is
@@ -89,7 +98,15 @@ if awk '/^\[features\]/{f=1;next} /^\[/{f=0} f && /^[[:space:]]*enterprise[[:spa
     fail "enterprise build (digest below; full: /tmp/pmv_ent_build.txt)"; digest /tmp/pmv_ent_build.txt; RC=1
   fi
   if env -u RTK_NO_AUTO_ALLOW cargo test --bin rtk --features enterprise hook_cmd::tests::fork_tests >/tmp/pmv_ent_test.txt 2>&1; then
-    pass "enterprise-gated tests ($(grep -hoE '[0-9]+ passed' /tmp/pmv_ent_test.txt | head -1) — hook_cmd fork_tests)"
+    # `cargo test` with a filter that matches nothing still exits 0 ("0 passed") — a
+    # relocated test module would print a green check over an assertion that never ran.
+    # Extract the count and require it non-zero, not just the exit code.
+    ent_passed=$(grep -hoE '[0-9]+ passed' /tmp/pmv_ent_test.txt | head -1 | grep -oE '[0-9]+')
+    if [ -n "$ent_passed" ] && [ "$ent_passed" -gt 0 ]; then
+      pass "enterprise-gated tests ($ent_passed passed — hook_cmd fork_tests)"
+    else
+      fail "enterprise-gated tests — filter 'hook_cmd::tests::fork_tests' matched 0 tests (filter is stale, not necessarily the code — update it if the module moved)"; RC=1
+    fi
   else
     fail "enterprise-gated tests (digest below; full: /tmp/pmv_ent_test.txt)"; digest /tmp/pmv_ent_test.txt; RC=1
   fi
@@ -121,6 +138,13 @@ inv_exists "FORK_NOTES.md"                             "FORK_NOTES.md present"
 # setext-heading / decorative separator in source & docs (false-positived here on 2026-07-12,
 # and again on 2026-07-24 against the pytest banner fixture upstream added in
 # src/cmds/python/uv_cmd.rs — "===== test session starts =====").
+# `grep` exits 2 (not just non-zero) when a path argument doesn't exist, and the else
+# branch below can't tell that apart from "clean" — assert the scan targets exist first,
+# so a path rename upstream fails loudly instead of silently scanning nothing.
+inv_exists "src"                              "conflict-marker scan target present (src/)"
+inv_exists "Cargo.toml"                       "conflict-marker scan target present (Cargo.toml)"
+inv_exists "Cargo.lock"                       "conflict-marker scan target present (Cargo.lock)"
+inv_exists ".release-please-manifest.json"    "conflict-marker scan target present (.release-please-manifest.json)"
 if grep -rlqE '^(<{7}|>{7})' src/ Cargo.toml Cargo.lock .release-please-manifest.json 2>/dev/null; then fail "conflict markers present in src/ or version files"; RC=1; else pass "no conflict markers in src/ or version files"; fi
 # Fork version marker — the §5 base-version check strips '-fork.N', so assert it survives here.
 if grep -m1 '^version' Cargo.toml | grep -qF -- '-fork'; then pass "Cargo.toml version carries -fork marker"; else fail "Cargo.toml lost -fork version suffix"; RC=1; fi
