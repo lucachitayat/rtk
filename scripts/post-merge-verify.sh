@@ -33,14 +33,20 @@ digest() { grep -nE 'error\[|error:|^error|warning:|^test .* FAILED|--> ' "$1" 2
 
 # Fork-invariant helpers (quiet — never dump matched lines into output).
 inv_exists() { if [ -e "$1" ]; then pass "$2"; else fail "$2 (missing: $1)"; RC=1; fi; }
-# DRIFT GUARD: inv_absent's detector (`[ -e ]`) is total — it cannot silently misbehave.
-# The drift surface is the PATH ARGUMENT, not the check itself. Both MCP absence assertions
-# below (the "MCP bridge dir removed" / "MCP rewrite cmd removed" checks) hardcode
-# "src/mcp" and "src/hooks/mcp_rewrite_cmd.rs"; an upstream
-# reintroduction of the bridge under a different path/name passes both silently. Widen the
-# path set here if upstream ever renames it — do NOT add a canary to inv_absent itself.
+# DRIFT GUARD: inv_absent's detector (`[ -e ]`) is total — it cannot silently misbehave, so
+# it needs no canary. The drift surface is the PATH ARGUMENT, not the check itself. Both MCP
+# absence assertions below (the "MCP bridge dir removed" / "MCP rewrite cmd removed" checks)
+# hardcode "src/mcp" and "src/hooks/mcp_rewrite_cmd.rs", so an upstream reintroduction of the
+# bridge under a different path/name passes both silently. That is what inv_grep_absent
+# covers: the same invariant stated over VOCABULARY instead of over a path, so it survives a
+# rename. Widen the path set here if upstream renames it — do NOT add a canary to inv_absent.
 inv_absent() { if [ -e "$1" ]; then fail "$2 (should be absent: $1)"; RC=1; else pass "$2"; fi; }
 inv_grep()   { if grep -rlqF -- "$1" "$2" 2>/dev/null; then pass "$3"; else fail "$3 (pattern gone from $2)"; RC=1; fi; }
+# Content-level absence — the mirror of inv_grep: fails when the pattern IS found. Unlike
+# inv_absent this detector is NOT total: `grep` exits 2 on a path that does not exist and 1
+# when there is simply no match, and neither this helper nor the caller can tell those apart.
+# The path argument's existence must therefore be asserted separately, with inv_exists.
+inv_grep_absent() { if grep -rlqE -- "$1" "$2" 2>/dev/null; then fail "$3 (found in $2)"; RC=1; else pass "$3"; fi; }
 
 RC=0
 
@@ -57,11 +63,49 @@ if cargo test --all >/tmp/pmv_test.txt 2>&1; then
 else
   fail "cargo test (digest below; full: /tmp/pmv_test.txt)"; digest /tmp/pmv_test.txt; RC=1
 fi
-# Shell-script tests (NOT covered by cargo): the master-only fix detector.
-if bash scripts/test-master-only.sh >/tmp/pmv_shtest.txt 2>&1; then
-  pass "shell tests ($(grep -hoE '[0-9]+ passed' /tmp/pmv_shtest.txt | head -1) — master-only detector)"
-else
-  fail "shell tests (digest below; full: /tmp/pmv_shtest.txt)"; digest /tmp/pmv_shtest.txt; RC=1
+# Shell-script tests (NOT covered by cargo). Discovered by GLOB, never by name: the previous
+# form hardcoded `scripts/test-master-only.sh` and labelled it "master-only detector", so a
+# sibling fixture added later would have sat in the tree unwired while the gate kept printing
+# one green line.
+#
+# Discovery is DEFAULT-INCLUDE. Anything matching scripts/test-*.sh runs unless it is named
+# in SH_TEST_EXCLUDE below, so a new fixture is wired the moment it lands and forgetting to
+# register it is not a failure mode. The excluded five need an installed `rtk` on PATH or an
+# external toolchain (41–144 rtk invocations each; test-install.sh exercises install.sh
+# rather than an in-tree detector) — they are integration suites, not hermetic fixtures.
+# Each exclusion's existence is asserted, so a rename over there goes stale LOUDLY here
+# instead of quietly dropping a fixture back out of the run.
+#
+# Two further assertions make the discovery itself checkable:
+#   - the number of fixtures run must be non-zero (a rename of the whole family, or a glob
+#     that stops matching, is a failure and not "all shell tests passed");
+#   - each fixture must REPORT a non-zero passing count. A fixture is a positive control for
+#     a detector, so one that exits 0 having asserted nothing is the exact failure mode these
+#     fixtures exist to catch. CONTRACT: every wired scripts/test-*.sh prints "<N> passed".
+SH_TEST_EXCLUDE="test-all.sh test-aristote.sh test-install.sh test-ruby.sh test-tracking.sh"
+for x in $SH_TEST_EXCLUDE; do
+  [ -f "scripts/$x" ] || { fail "shell-test exclusion is stale — scripts/$x no longer exists"; RC=1; }
+done
+sh_fixtures=0
+for t in scripts/test-*.sh; do
+  [ -f "$t" ] || continue   # an unmatched glob expands to the literal pattern
+  t_name=$(basename "$t")
+  case " $SH_TEST_EXCLUDE " in *" $t_name "*) continue ;; esac
+  sh_fixtures=$((sh_fixtures + 1))
+  t_log="/tmp/pmv_shtest_${t_name%.sh}.txt"
+  if bash "$t" >"$t_log" 2>&1; then
+    t_passed=$(grep -hoE '[0-9]+ passed' "$t_log" | head -1 | grep -oE '[0-9]+')
+    if [ -n "$t_passed" ] && [ "$t_passed" -gt 0 ]; then
+      pass "shell test $t_name ($t_passed passed)"
+    else
+      fail "shell test $t_name exited 0 but reported no passing assertions (full: $t_log)"; RC=1
+    fi
+  else
+    fail "shell test $t_name (digest below; full: $t_log)"; digest "$t_log"; RC=1
+  fi
+done
+if [ "$sh_fixtures" -eq 0 ]; then
+  fail "shell tests — no scripts/test-*.sh fixtures matched (the family moved or was renamed)"; RC=1
 fi
 echo
 
@@ -123,10 +167,19 @@ echo
 # that silently drops a fork feature is the exact failure mode this section prevents.
 # (Source-level — runs even when the release build above failed.)
 bold "── Fork invariants ──"
+# Scan-target existence comes FIRST: every content-level check below treats a negative grep
+# as "the invariant holds", and grep cannot distinguish "no match" (exit 1) from "that path
+# does not exist" (exit 2). Without this line an upstream reorganisation of src/ would print
+# a row of green checks over scans that examined nothing.
+inv_exists "src"                                       "scan target present (src/)"
 inv_exists "src/cmds/cloud/az_cmd.rs"                  "Azure filter az_cmd.rs present"
 inv_grep   "Commands::Az" "src/main.rs"                "Az command wired in main.rs"
 inv_absent "src/mcp"                                   "MCP bridge dir removed (fork)"
 inv_absent "src/hooks/mcp_rewrite_cmd.rs"              "MCP rewrite cmd removed (fork)"
+# The two checks above are by hardcoded path; this one is by vocabulary, so a reintroduction
+# under any other name still fails. Verified non-vacuous when added: the alternation fires on
+# a planted `mcp_rewrite` line, and src/ carried 123 .rs files with zero live matches.
+inv_grep_absent 'mcp_rewrite|McpProxy|Commands::Mcp' "src" "no MCP bridge vocabulary in src/ (path-independent)"
 inv_grep   "libc::SIGPIPE, libc::SIG_DFL" "src/main.rs" "SIGPIPE reset handler present"
 inv_grep   "handle_signal" "src/main.rs"               "SIGINT/SIGTERM child-kill handler present"
 inv_grep   "build_parallel" "src/cmds/system/find_cmd.rs" "find parallel-walk perf (untested-for-removal)"
@@ -141,11 +194,19 @@ inv_exists "FORK_NOTES.md"                             "FORK_NOTES.md present"
 # `grep` exits 2 (not just non-zero) when a path argument doesn't exist, and the else
 # branch below can't tell that apart from "clean" — assert the scan targets exist first,
 # so a path rename upstream fails loudly instead of silently scanning nothing.
-inv_exists "src"                              "conflict-marker scan target present (src/)"
+# (src/ is already asserted at the top of this section.)
 inv_exists "Cargo.toml"                       "conflict-marker scan target present (Cargo.toml)"
 inv_exists "Cargo.lock"                       "conflict-marker scan target present (Cargo.lock)"
 inv_exists ".release-please-manifest.json"    "conflict-marker scan target present (.release-please-manifest.json)"
-if grep -rlqE '^(<{7}|>{7})' src/ Cargo.toml Cargo.lock .release-please-manifest.json 2>/dev/null; then fail "conflict markers present in src/ or version files"; RC=1; else pass "no conflict markers in src/ or version files"; fi
+# scripts/ is in the scanned set because it was NOT, and that cost a commit: resolving the
+# develop→harden merge of THIS file left a marker pair behind in it and the gate reported
+# "no conflict markers" — the domain excluded the very script doing the scanning. The
+# verification files are the ones a merge conflict hurts most, since a broken gate reports
+# green. build.rs is in for the same reason — it carries the compile-time egress guard. Docs
+# stay out: they carry setext headings and fenced diff samples that look like markers.
+inv_exists "scripts"                          "conflict-marker scan target present (scripts/)"
+inv_exists "build.rs"                         "conflict-marker scan target present (build.rs)"
+if grep -rlqE '^(<{7}|>{7})' src/ scripts/ build.rs Cargo.toml Cargo.lock .release-please-manifest.json 2>/dev/null; then fail "conflict markers present in src/, scripts/, build.rs or version files"; RC=1; else pass "no conflict markers in src/, scripts/, build.rs or version files"; fi
 # Fork version marker — the §5 base-version check strips '-fork.N', so assert it survives here.
 if grep -m1 '^version' Cargo.toml | grep -qF -- '-fork'; then pass "Cargo.toml version carries -fork marker"; else fail "Cargo.toml lost -fork version suffix"; RC=1; fi
 echo

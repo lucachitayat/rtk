@@ -76,12 +76,32 @@ fn rtk_in_dir(dir: &std::path::Path, args: &[&str]) -> (String, Option<i32>) {
     (stdout, code)
 }
 
+/// `true` when a real `rg` is on PATH.
+///
+/// Every test that compares rtk's output against real ripgrep guards on this and returns
+/// early without it — a skip `cargo test` reports as a pass. CI installed no ripgrep, and
+/// no runner image ships it, so ~30 such assertions across tests/ never ran there.
+/// `RTK_REQUIRE_RG=1` (set on the unix legs of the CI `test` job) makes the skip fatal
+/// instead of silent.
+///
+/// This file is the reason CI sets that variable on the unix legs ONLY: it is the single
+/// file in tests/ without a `#![cfg(unix)]` crate attribute, so it compiles on Windows,
+/// where this guard is also what keeps a `grep`-dependent test from running on a runner
+/// that has no `grep`. Requiring `rg` here on Windows would trade a silent skip for a
+/// guaranteed failure.
 fn rg_available() -> bool {
-    Command::new("rg")
+    let found = Command::new("rg")
         .arg("--version")
         .output()
         .map(|o| o.status.success())
-        .unwrap_or(false)
+        .unwrap_or(false);
+    assert!(
+        found || std::env::var("RTK_REQUIRE_RG").as_deref() != Ok("1"),
+        "RTK_REQUIRE_RG=1 but `rg` is not on PATH: {} would skip silently and report a \
+         pass for assertions that never ran",
+        file!()
+    );
+    found
 }
 
 fn init_git_repo() -> tempfile::TempDir {
