@@ -8,9 +8,9 @@ use crate::core::tee::force_tee_hint;
 use crate::core::tracking;
 use crate::core::utils::{exit_code_from_output, exit_code_from_status, resolved_command, truncate_iso_date};
 use anyhow::{Context, Result};
-use lazy_static::lazy_static;
 use regex::Regex;
 use serde_json::Value;
+use std::sync::LazyLock;
 
 const MAX_ITEMS: usize = 20;
 const MAX_GENERIC_RAW_BYTES: usize = 20_000;
@@ -87,10 +87,9 @@ const NOISE_KEYS: &[&str] = &[
     "href",
 ];
 
-lazy_static! {
-    static ref TIMESTAMP_RE: Regex =
-        Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s*").unwrap();
-}
+static TIMESTAMP_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s*").unwrap()
+});
 
 struct FilterResult {
     text: String,

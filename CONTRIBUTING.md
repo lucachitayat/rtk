@@ -60,7 +60,7 @@ Every filter needs a fallback path. Every hook must handle malformed input grace
 
 <10ms startup. No async runtime. No config file I/O on the critical path. If developers perceive any delay, they'll disable RTK. Speed is the difference between adoption and abandonment.
 
-`lazy_static!` for all regex. No network calls. No disk reads in the hot path. Benchmark before/after with `hyperfine`.
+Use `LazyLock` statics for all regex. No network calls. No disk reads in the hot path. Benchmark before/after with `hyperfine`.
 
 ### Extensibility
 
@@ -187,6 +187,13 @@ chore/release-pipeline-cleanup
 git checkout develop
 git pull origin develop
 git checkout -b feat/scope-your-clear-description
+```
+
+Opt in once per clone so `git blame` skips the bulk-formatting commits listed in
+`.git-blame-ignore-revs` and reports whoever actually wrote each line:
+
+```bash
+git config blame.ignoreRevsFile .git-blame-ignore-revs
 ```
 
 ### 2. Make Your Changes

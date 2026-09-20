@@ -13,15 +13,17 @@ use crate::core::tracking;
 use crate::core::truncate::{CAP_INVENTORY, CAP_WARNINGS};
 use crate::core::utils::{exit_code_from_status, resolved_command, strip_ansi, truncate};
 use anyhow::{Context, Result};
-use lazy_static::lazy_static;
 use regex::Regex;
+use std::sync::LazyLock;
 
-lazy_static! {
-    static ref PYTHON_FRAME_RE: Regex = Regex::new(r#"^\s*File ".*", line \d+.*$"#).unwrap();
-    static ref PYTHON_EXCEPTION_RE: Regex =
-        Regex::new(r"^\s*[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception):").unwrap();
-    static ref JS_FRAME_RE: Regex = Regex::new(r"^\s*at .+:\d+:\d+.*$").unwrap();
-    static ref ERROR_START_PATTERNS: Vec<Regex> = vec![
+static PYTHON_FRAME_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"^\s*File ".*", line \d+.*$"#).unwrap());
+static PYTHON_EXCEPTION_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception):").unwrap());
+static JS_FRAME_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*at .+:\d+:\d+.*$").unwrap());
+static ERROR_START_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    vec![
         Regex::new(r"(?i)\berror\b").unwrap(),
         Regex::new(r"(?i)\bfailed\b").unwrap(),
         Regex::new(r"(?i)\bfailure\b").unwrap(),
@@ -35,8 +37,8 @@ lazy_static! {
         Regex::new(r"^\s*Caused by:").unwrap(),
         Regex::new(r"^\s*note:").unwrap(),
         Regex::new(r"^\s*help:").unwrap(),
-    ];
-}
+    ]
+});
 
 const MAX_TRACEBACK_FRAMES: usize = CAP_WARNINGS;
 const MAX_ERROR_CONTINUATION_LINES: usize = CAP_WARNINGS;
@@ -178,14 +180,15 @@ fn program_output(text: &str, tee_slug: &str) -> String {
         .iter()
         .map(|line| truncate(line, MAX_PROGRAM_LINE_CHARS))
         .collect();
-    let line_was_cut = capped.iter().zip(lines).any(|(cut, full)| cut.len() != full.len());
+    let line_was_cut = capped
+        .iter()
+        .zip(lines)
+        .any(|(cut, full)| cut.len() != full.len());
 
     if capped.len() <= CAP_INVENTORY {
         let out = capped.join("\n");
-        if line_was_cut {
-            if let Some(hint) = crate::core::tee::force_tee_hint(&clean, tee_slug) {
-                return format!("{out}\n{hint}");
-            }
+        if line_was_cut && let Some(hint) = crate::core::tee::force_tee_hint(&clean, tee_slug) {
+            return format!("{out}\n{hint}");
         }
         return out;
     }
@@ -326,7 +329,9 @@ fn is_error_start(line: &str) -> bool {
         return true;
     }
 
-    ERROR_START_PATTERNS.iter().any(|pattern| pattern.is_match(line))
+    ERROR_START_PATTERNS
+        .iter()
+        .any(|pattern| pattern.is_match(line))
 }
 
 fn is_error_continuation(line: &str) -> bool {
@@ -347,7 +352,7 @@ fn is_error_continuation(line: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{filter_uv_run_output, CAP_INVENTORY, MAX_TRACEBACK_FRAMES};
+    use super::{CAP_INVENTORY, MAX_TRACEBACK_FRAMES, filter_uv_run_output};
     use crate::core::utils::count_tokens;
 
     #[test]

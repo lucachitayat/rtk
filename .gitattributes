@@ -3,6 +3,10 @@
 # CRLF, and tests that synthesize CRLF input from them produce \r\r\n.
 tests/fixtures/** -text
 
+# Hook payloads are installed byte-for-byte; keep their line endings stable
+# across platforms for embedded fixtures, hashes, and generated installs.
+hooks/**/*.ts -text
+
 # CHANGELOG.md diverges permanently: the fork keeps its own -dev-fork sections that upstream
 # never has. union merge keeps BOTH sides' lines on conflict so a fork sync neither drops the
 # fork's authored history nor upstream's new entries. (Spec: rtk-upgrade/SKILL.md § Versioning.)
