@@ -6,6 +6,72 @@ Newest entries on top.
 
 ---
 
+## 2026-09-20 — Sync upstream/develop @ 0924356b (658 commits); edition 2024
+
+Merged 658 commits from `upstream/develop` into `develop` (merge `b88f4a08`, `--no-ff`). Fork version
+retracked `0.42.4-dev-fork.2` → **`0.48.0-dev-fork.1`**. `harden/no-egress` deliberately NOT brought
+forward in this pass — see "Deferred" below. Gate green: fmt, clippy, **3730 tests**, release build,
+19/19 fork invariants, 3/3 behavior spot-checks.
+
+### Sequencing
+`check` previewed **48** conflicting files against `harden/no-egress` but only **5** against
+`develop` — and the extra set included `src/hooks/hook_cmd.rs`, `src/main.rs`, `src/core/config.rs`
+and `build.rs`, i.e. the egress-sensitive surface. Syncing `develop` first again isolated mechanical
+conflicts from security-relevant ones (same lesson as 2026-07-24, now with a 10× ratio).
+
+### Conflicts on `develop` (5)
+- `.gitattributes`, `.release-please-manifest.json` → additive, both sides kept.
+- `Cargo.toml` → adopted upstream's **`edition = "2024"`** and its `temp-env` dev-dep; kept the fork's
+  `description` and the `insta` dev-dep. This is why `apply` refused to auto-resolve: a non-version
+  line genuinely changed, exactly as the versioning contract intends.
+- `src/cmds/system/find_cmd.rs` → the substantive one, below.
+
+### `find_cmd.rs` — upstream's logic, the fork's threading
+Upstream rewrote the walk into `native_walk`, adding three things `collect_matches` never had:
+**filtered-entry disclosure** (`... (N filtered)` for hidden/gitignored entries the walk skipped —
+previously a bare "no results" with no hint), **missing path → exit 1** with find-style stderr, and
+**symlinked-root handling** (depth-0 `is_dir` via `fs::metadata`). Upstream's `render()` also sorts
+`files` itself, making the fork's own sort redundant.
+
+The fork's contribution here is orthogonal: `build_parallel` (270ms → 135ms on a 16k-file tree, see
+the 2026-06-02 entry). So neither side was dropped — **took upstream's logic wholesale and re-applied
+the parallel strategy on top**. Disclosure bookkeeping is stateful and inherently sequential, so
+rather than lock it, workers now only *observe* and hand back `WalkRecord`s; the bookkeeping is
+replayed serially over the drained records, making output identical to a serial walk regardless of
+scheduling. An `AtomicUsize` gates buffering past `DISCLOSURE_ENTRY_CAP` so a huge tree can't balloon
+the channel, and `visited_dirs` is sorted so `disclose_filtered`'s `FILTERED_CAP` early-return
+truncates a deterministic prefix. The fork's 10 characterization tests are ported onto `native_walk`.
+
+### Two semantic breaks a textually clean merge hid
+Neither produced a conflict; both were caught by the build, not by git.
+- Upstream migrated `automod` → **explicit module lists** (`70ec493d`), which silently un-declared
+  the fork-only `az_cmd`. `build.rs` caught it: *"src/cmds/cloud/az_cmd.rs is not declared"*.
+  Re-declared in `src/cmds/cloud/mod.rs`. **Every future fork-only module is exposed to this** — a
+  new `src/cmds/**/foo_cmd.rs` must now be added to its `mod.rs` by hand.
+- Upstream dropped `lazy_static` for `std::sync::LazyLock`; `az_cmd.rs` still used it. Adopted the
+  upstream idiom rather than re-adding the dependency. Note `.claude/rules/rust-patterns.md` still
+  mandates `lazy_static!` for regex — **that rule is now stale** and should be updated to `LazyLock`.
+
+### Environmental failure, not merge damage (disconfirmed per AGENTS.md)
+4 of 5 `tests/hook_warning_scope_test.rs` tests failed. Cause: `resolve_claude_dir`
+(`src/hooks/init.rs:3341`) prefers `$CLAUDE_CONFIG_DIR` over `$HOME`, and this machine's multi-profile
+setup exports `~/.claude-art`, which *has* the hook installed → status `Ok` → no reminder. Upstream's
+`isolating_env` pins `HOME`/`RTK_DB_PATH`/`XDG_*` but not `CLAUDE_CONFIG_DIR`, contradicting its own
+doc comment. Confirmed by `env -u CLAUDE_CONFIG_DIR` (5/5 green), fixed by pinning it in the helper.
+
+Also of note: the first gate run's `cargo test` digest surfaced `error[E0308]: type mismatch`, which
+is **test stdout from a filter fixture**, not a compile error. The digest greps for error shapes and
+cannot distinguish them from fixture content; the run continued and `--release` built in the same
+pass. Worth remembering before chasing a phantom compile break.
+
+### Deferred
+- `harden/no-egress` is still at `e4e72de`, unsynced. Bringing it forward means resolving
+  `src/hooks/hook_cmd.rs` + `src/main.rs` — and per the skill, that merge is not done until
+  `scripts/export-enterprise.sh harden/no-egress` passes its step-6a telemetry scan.
+- `.claude/rules/rust-patterns.md` `lazy_static` guidance is stale under edition 2024 (above).
+
+---
+
 ## 2026-07-24 — Sync upstream/develop @ bee2178 (231 commits); tooling hardening
 
 Merged 231 commits from `upstream/develop` into `develop` (merge `7659d3a`, `--no-ff`), then brought
