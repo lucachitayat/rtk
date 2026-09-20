@@ -6,7 +6,9 @@
 
 use crate::core::tee::force_tee_hint;
 use crate::core::tracking;
-use crate::core::utils::{exit_code_from_output, exit_code_from_status, resolved_command, truncate_iso_date};
+use crate::core::utils::{
+    exit_code_from_output, exit_code_from_status, resolved_command, truncate_iso_date,
+};
 use anyhow::{Context, Result};
 use regex::Regex;
 use serde_json::Value;
@@ -87,9 +89,8 @@ const NOISE_KEYS: &[&str] = &[
     "href",
 ];
 
-static TIMESTAMP_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s*").unwrap()
-});
+static TIMESTAMP_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s*").unwrap());
 
 struct FilterResult {
     text: String,
@@ -143,10 +144,20 @@ pub fn run(subcommand: &str, args: &[String], verbose: u8) -> Result<i32> {
 
 fn run_pipelines_build(args: &[String], verbose: u8, full_sub: &str) -> Result<i32> {
     if !args.is_empty() && args[0] == "list" {
-        return run_az_filtered(&build_az_args("pipelines", &["build", "list"], &args[1..]), verbose, full_sub, filter_build_list);
+        return run_az_filtered(
+            &build_az_args("pipelines", &["build", "list"], &args[1..]),
+            verbose,
+            full_sub,
+            filter_build_list,
+        );
     }
     if !args.is_empty() && args[0] == "show" {
-        return run_az_filtered(&build_az_args("pipelines", &["build", "show"], &args[1..]), verbose, full_sub, filter_build_show);
+        return run_az_filtered(
+            &build_az_args("pipelines", &["build", "show"], &args[1..]),
+            verbose,
+            full_sub,
+            filter_build_show,
+        );
     }
     run_generic("pipelines", &prepend_arg("build", args), verbose, full_sub)
 }
@@ -251,7 +262,10 @@ fn filter_build_show(json_str: &str) -> Option<FilterResult> {
     // Calculate duration if both timestamps present
     let time_info = match (start, finish) {
         (Some(s), Some(f)) => {
-            match (chrono::DateTime::parse_from_rfc3339(s), chrono::DateTime::parse_from_rfc3339(f)) {
+            match (
+                chrono::DateTime::parse_from_rfc3339(s),
+                chrono::DateTime::parse_from_rfc3339(f),
+            ) {
                 (Ok(start_dt), Ok(finish_dt)) => {
                     let duration = finish_dt.signed_duration_since(start_dt);
                     let minutes = duration.num_minutes();
@@ -276,7 +290,15 @@ fn filter_build_show(json_str: &str) -> Option<FilterResult> {
 
     Some(FilterResult::new(format!(
         "{} build {} | {} #{}\n  branch: {} | commit: {}\n  reason: {} | by: {}\n  {}",
-        icon, id, def_name, build_number, short_branch, short_commit, reason, requested_by, time_info
+        icon,
+        id,
+        def_name,
+        build_number,
+        short_branch,
+        short_commit,
+        reason,
+        requested_by,
+        time_info
     )))
 }
 
@@ -284,10 +306,20 @@ fn filter_build_show(json_str: &str) -> Option<FilterResult> {
 
 fn run_pipelines_runs(args: &[String], verbose: u8, full_sub: &str) -> Result<i32> {
     if !args.is_empty() && args[0] == "list" {
-        return run_az_filtered(&build_az_args("pipelines", &["runs", "list"], &args[1..]), verbose, full_sub, filter_runs_list);
+        return run_az_filtered(
+            &build_az_args("pipelines", &["runs", "list"], &args[1..]),
+            verbose,
+            full_sub,
+            filter_runs_list,
+        );
     }
     if !args.is_empty() && args[0] == "show" {
-        return run_az_filtered(&build_az_args("pipelines", &["runs", "show"], &args[1..]), verbose, full_sub, filter_runs_show);
+        return run_az_filtered(
+            &build_az_args("pipelines", &["runs", "show"], &args[1..]),
+            verbose,
+            full_sub,
+            filter_runs_show,
+        );
     }
     run_generic("pipelines", &prepend_arg("runs", args), verbose, full_sub)
 }
@@ -338,11 +370,7 @@ fn filter_runs_list(json_str: &str) -> Option<FilterResult> {
     }
 
     let text = if truncated {
-        format!(
-            "{}\n... +{} more runs",
-            lines.join("\n"),
-            total - MAX_ITEMS
-        )
+        format!("{}\n... +{} more runs", lines.join("\n"), total - MAX_ITEMS)
     } else {
         lines.join("\n")
     };
@@ -392,7 +420,10 @@ fn filter_runs_show(json_str: &str) -> Option<FilterResult> {
     // Calculate duration if both timestamps present
     let time_info = match (start, finish) {
         (Some(s), Some(f)) => {
-            match (chrono::DateTime::parse_from_rfc3339(s), chrono::DateTime::parse_from_rfc3339(f)) {
+            match (
+                chrono::DateTime::parse_from_rfc3339(s),
+                chrono::DateTime::parse_from_rfc3339(f),
+            ) {
                 (Ok(start_dt), Ok(finish_dt)) => {
                     let duration = finish_dt.signed_duration_since(start_dt);
                     let minutes = duration.num_minutes();
@@ -417,7 +448,15 @@ fn filter_runs_show(json_str: &str) -> Option<FilterResult> {
 
     Some(FilterResult::new(format!(
         "{} run {} | {} #{}\n  branch: {} | commit: {}\n  reason: {} | by: {}\n  {}",
-        icon, id, def_name, build_number, short_branch, short_commit, reason, requested_by, time_info
+        icon,
+        id,
+        def_name,
+        build_number,
+        short_branch,
+        short_commit,
+        reason,
+        requested_by,
+        time_info
     )))
 }
 
@@ -427,12 +466,18 @@ fn run_devops_invoke(args: &[String], verbose: u8, full_sub: &str) -> Result<i32
     let resource = find_flag_value(args, "--resource");
 
     match resource.as_deref() {
-        Some("timeline") => {
-            run_az_filtered(&build_az_args("devops", &["invoke"], args), verbose, full_sub, filter_timeline)
-        }
-        Some("logs") => {
-            run_az_text_filtered(&build_az_args("devops", &["invoke"], args), verbose, full_sub, filter_logs)
-        }
+        Some("timeline") => run_az_filtered(
+            &build_az_args("devops", &["invoke"], args),
+            verbose,
+            full_sub,
+            filter_timeline,
+        ),
+        Some("logs") => run_az_text_filtered(
+            &build_az_args("devops", &["invoke"], args),
+            verbose,
+            full_sub,
+            filter_logs,
+        ),
         _ => run_generic("devops", &prepend_arg("invoke", args), verbose, full_sub),
     }
 }
@@ -455,7 +500,10 @@ fn filter_timeline(json_str: &str) -> Option<FilterResult> {
         // Calculate duration
         let duration_str = match (start, finish) {
             (Some(s), Some(f)) => {
-                match (chrono::DateTime::parse_from_rfc3339(s), chrono::DateTime::parse_from_rfc3339(f)) {
+                match (
+                    chrono::DateTime::parse_from_rfc3339(s),
+                    chrono::DateTime::parse_from_rfc3339(f),
+                ) {
                     (Ok(start_dt), Ok(finish_dt)) => {
                         let duration = finish_dt.signed_duration_since(start_dt);
                         let minutes = duration.num_minutes();
@@ -502,12 +550,11 @@ fn filter_timeline(json_str: &str) -> Option<FilterResult> {
             ));
 
             // Add first issue message if present
-            if let Some(issues) = r["issues"].as_array() {
-                if let Some(first_issue) = issues.first() {
-                    if let Some(msg) = first_issue["message"].as_str() {
-                        lines.push(format!("    > {}", msg));
-                    }
-                }
+            if let Some(issues) = r["issues"].as_array()
+                && let Some(first_issue) = issues.first()
+                && let Some(msg) = first_issue["message"].as_str()
+            {
+                lines.push(format!("    > {}", msg));
             }
         } else {
             lines.push(format!("  ok {} ({}) {}", name, rtype, duration_str));
@@ -532,51 +579,58 @@ fn filter_timeline(json_str: &str) -> Option<FilterResult> {
 fn filter_logs(raw: &str) -> Option<FilterResult> {
     // az devops invoke --resource logs returns JSON with a "value" array of log lines,
     // OR when fetching a specific log, the lines are in the "value" array too.
-    if let Ok(v) = serde_json::from_str::<Value>(raw) {
-        if let Some(log_lines) = v["value"].as_array() {
-            // List of available logs (each has id and lineCount)
-            if log_lines.first().and_then(|l| l["lineCount"].as_i64()).is_some() {
-                let mut lines = Vec::new();
-                for log in log_lines {
-                    let id = log["id"].as_i64().unwrap_or(0);
-                    let count = log["lineCount"].as_i64().unwrap_or(0);
-                    lines.push(format!("logId:{} ({} lines)", id, count));
-                }
-                return Some(FilterResult::new(lines.join("\n")));
+    if let Ok(v) = serde_json::from_str::<Value>(raw)
+        && let Some(log_lines) = v["value"].as_array()
+    {
+        // List of available logs (each has id and lineCount)
+        if log_lines
+            .first()
+            .and_then(|l| l["lineCount"].as_i64())
+            .is_some()
+        {
+            let mut lines = Vec::new();
+            for log in log_lines {
+                let id = log["id"].as_i64().unwrap_or(0);
+                let count = log["lineCount"].as_i64().unwrap_or(0);
+                lines.push(format!("logId:{} ({} lines)", id, count));
             }
-
-            // Actual log content — array of strings with timestamp prefixes
-            let total = log_lines.len();
-            let tail_size = resolved_log_tail();
-            let tail: Vec<&Value> = if total > tail_size {
-                log_lines[total - tail_size..].iter().collect()
-            } else {
-                log_lines.iter().collect()
-            };
-
-            let truncated = total > tail_size;
-            let mut stripped = Vec::new();
-
-            for line in &tail {
-                if let Some(s) = (*line).as_str() {
-                    let cleaned = TIMESTAMP_RE.replace(s, "").to_string();
-                    let rendered = elide_oversized_embedded_json(&cleaned, EMBEDDED_PAYLOAD_THRESHOLD)
-                        .unwrap_or(cleaned);
-                    stripped.push(rendered);
-                }
-            }
-
-            let mut text = stripped.join("\n");
-            if truncated {
-                text = format!("... ({} lines total, showing last {})\n{}", total, tail_size, text);
-            }
-
-            return Some(if truncated {
-                FilterResult::truncated(text)
-            } else {
-                FilterResult::new(text)
-            });
+            return Some(FilterResult::new(lines.join("\n")));
         }
+
+        // Actual log content — array of strings with timestamp prefixes
+        let total = log_lines.len();
+        let tail_size = resolved_log_tail();
+        let tail: Vec<&Value> = if total > tail_size {
+            log_lines[total - tail_size..].iter().collect()
+        } else {
+            log_lines.iter().collect()
+        };
+
+        let truncated = total > tail_size;
+        let mut stripped = Vec::new();
+
+        for line in &tail {
+            if let Some(s) = (*line).as_str() {
+                let cleaned = TIMESTAMP_RE.replace(s, "").to_string();
+                let rendered = elide_oversized_embedded_json(&cleaned, EMBEDDED_PAYLOAD_THRESHOLD)
+                    .unwrap_or(cleaned);
+                stripped.push(rendered);
+            }
+        }
+
+        let mut text = stripped.join("\n");
+        if truncated {
+            text = format!(
+                "... ({} lines total, showing last {})\n{}",
+                total, tail_size, text
+            );
+        }
+
+        return Some(if truncated {
+            FilterResult::truncated(text)
+        } else {
+            FilterResult::new(text)
+        });
     }
 
     // Not JSON or unexpected structure — pass through
@@ -695,7 +749,11 @@ fn run_generic(subcommand: &str, args: &[String], verbose: u8, full_sub: &str) -
 
     let mut has_output_flag = false;
     for arg in args {
-        if arg == "--output" || arg == "-o" || arg.starts_with("--output=") || arg.starts_with("-o=") {
+        if arg == "--output"
+            || arg == "-o"
+            || arg.starts_with("--output=")
+            || arg.starts_with("-o=")
+        {
             has_output_flag = true;
         }
         cmd.arg(arg);
@@ -854,7 +912,11 @@ fn run_az_json(
     // Pass through all args but ensure JSON output
     let mut has_output_flag = false;
     for arg in full_args {
-        if arg == "--output" || arg == "-o" || arg.starts_with("--output=") || arg.starts_with("-o=") {
+        if arg == "--output"
+            || arg == "-o"
+            || arg.starts_with("--output=")
+            || arg.starts_with("-o=")
+        {
             has_output_flag = true;
         }
         cmd.arg(arg);
@@ -980,7 +1042,11 @@ mod tests {
             "finishTime": "2026-04-10T12:00:00.000Z"
         }"#;
         let result = filter_build_show(json).unwrap();
-        assert!(result.text.starts_with("ok build 12345 | MyPipeline #2026.0410.1"));
+        assert!(
+            result
+                .text
+                .starts_with("ok build 12345 | MyPipeline #2026.0410.1")
+        );
         assert!(result.text.contains("branch: main"));
         assert!(result.text.contains("commit: abc1234"));
         assert!(result.text.contains("reason: pullRequest"));
@@ -1032,9 +1098,17 @@ mod tests {
         assert!(result.text.contains("FAIL timeline: 2 failed of 3 tasks"));
         assert!(result.text.contains("ok Build (Stage)"));
         assert!(result.text.contains("2m30s"));
-        assert!(result.text.contains("FAIL Run Tests (Task) logId:42 3err 1warn"));
+        assert!(
+            result
+                .text
+                .contains("FAIL Run Tests (Task) logId:42 3err 1warn")
+        );
         assert!(result.text.contains("> Process completed with exit code 1"));
-        assert!(result.text.contains("FAIL Publish Results (Task) logId:43 1err"));
+        assert!(
+            result
+                .text
+                .contains("FAIL Publish Results (Task) logId:43 1err")
+        );
         assert!(result.text.contains("> No test results found"));
     }
 
@@ -1121,15 +1195,24 @@ mod tests {
             "--route-parameters".into(),
             "buildId=123".into(),
         ];
-        assert_eq!(find_flag_value(&args, "--resource"), Some("timeline".to_string()));
-        assert_eq!(find_flag_value(&args, "--route-parameters"), Some("buildId=123".to_string()));
+        assert_eq!(
+            find_flag_value(&args, "--resource"),
+            Some("timeline".to_string())
+        );
+        assert_eq!(
+            find_flag_value(&args, "--route-parameters"),
+            Some("buildId=123".to_string())
+        );
         assert_eq!(find_flag_value(&args, "--missing"), None);
     }
 
     #[test]
     fn test_find_flag_value_equals() {
         let args: Vec<String> = vec!["--resource=logs".into()];
-        assert_eq!(find_flag_value(&args, "--resource"), Some("logs".to_string()));
+        assert_eq!(
+            find_flag_value(&args, "--resource"),
+            Some("logs".to_string())
+        );
     }
 
     // ─── Token Savings Tests ───────────────────────────────────────────────────
@@ -1575,7 +1658,8 @@ mod tests {
     fn test_access_token_token_savings() {
         let long_token = "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsIng1dCI6InEtTWpOVjN1YnF0bHFLZzFNdGRDVjVIdW1qYyIsImtpZCI6InEtTWpOVjN1YnF0bHFLZzFNdGRDVjVIdW1qYyJ9eyJhdWQiOiJodHRwczovL21hbmFnZW1lbnQuY29yZS53aW5kb3dzLm5ldC8iLCJpc3MiOiJodHRwczovL3N0cy53aW5kb3dzLm5ldC8xMjM0NTY3OC0xMjM0LTEyMzQtMTIzNC0xMjM0NTY3ODkwYWIvIiwiaWF0IjoxNzEwMDAwMDAwLCJuYmYiOjE3MTAwMDAwMDAsImV4cCI6MTcxMDAwMzYwMCwiYWlvIjoiRTJaZ1lIanIxWVgvMy90cC82bjlPZnovQitHQUE9PSIsImFwcGlkIjoiYXBwaWQtZ3VpZCIsImFwcGlkYWNyIjoiMSIsImlkcCI6Imh0dHBzOi8vc3RzLndpbmRvd3MubmV0L3RlbmFudC1ndWlkLyIsIm9pZCI6Im9pZC1ndWlkIiwicmgiOiIwLkFYQUFsNlFfb1hlZ0JrZUcxX0lULWdoalFGVEFBQUFBQUFBQXdBQUFBQUFBQUFBQUFBQS4iLCJzdWIiOiJzdWItZ3VpZCIsInRpZCI6ImUzZjNhNDk3LWE3NzctNDg2Ny04NmQ3ZjIxM2ZhMDg2MyIsInV0aSI6ImI3RGtCakdLT2s2OWhUMGozRTNmQUEiLCJ2ZXIiOiIxLjAiLCJ4bXNfdGNkdCI6MTYzOTI0NTk5OH0=";
 
-        let json = format!(r#"{{
+        let json = format!(
+            r#"{{
             "accessToken": "{}",
             "expiresOn": "2026-04-10T13:00:00.000000+00:00",
             "expires_on": 1781362800,
@@ -1583,7 +1667,9 @@ mod tests {
             "tenant": "abcdef01-2345-6789-abcd-ef0123456789",
             "tokenType": "Bearer",
             "environmentName": "AzureCloud"
-        }}"#, long_token);
+        }}"#,
+            long_token
+        );
 
         let result = filter_access_token(&json).unwrap();
         let input_tokens = count_tokens(&json);
@@ -1742,7 +1828,9 @@ mod tests {
         for i in 0..50 {
             log_lines.push(format!(
                 "\"2026-04-10T11:{:02}:{:02}.0000000Z Log line {}\"",
-                i / 60, i % 60, i + 1
+                i / 60,
+                i % 60,
+                i + 1
             ));
         }
         let json = format!(r#"{{ "value": [{}] }}"#, log_lines.join(",\n"));
@@ -1828,7 +1916,9 @@ mod tests {
             assert!(
                 text.contains(&format!("logId:{}", id)),
                 "filter_timeline dropped logId:{} — drill-down to `invoke --resource logs --logId {}` would fail silently.\nOutput:\n{}",
-                id, id, text
+                id,
+                id,
+                text
             );
         }
 
@@ -1875,8 +1965,7 @@ mod tests {
             "oversized embedded JSON must be elided, but raw blob still present"
         );
         assert!(
-            result.text.contains("<json elided")
-                && result.text.contains("bytes="),
+            result.text.contains("<json elided") && result.text.contains("bytes="),
             "elision marker missing from output:\n{}",
             result.text
         );
@@ -2003,7 +2092,11 @@ mod tests {
             "finishTime": "2026-04-10T12:00:00.000Z"
         }"#;
         let result = filter_runs_show(json).unwrap();
-        assert!(result.text.starts_with("ok run 12345 | MyPipeline #2026.0410.1"));
+        assert!(
+            result
+                .text
+                .starts_with("ok run 12345 | MyPipeline #2026.0410.1")
+        );
         assert!(result.text.contains("branch: main"));
         assert!(result.text.contains("commit: abc1234"));
         assert!(result.text.contains("reason: pullRequest"));
@@ -2314,7 +2407,8 @@ mod tests {
 
     #[test]
     fn test_prune_az_noise_strips_keys() {
-        let mut value: Value = serde_json::from_str(r#"{
+        let mut value: Value = serde_json::from_str(
+            r#"{
             "name": "keep-me",
             "_links": {"self": {"href": "https://example.com"}},
             "url": "https://example.com/api",
@@ -2345,14 +2439,20 @@ mod tests {
                 {"id": 1, "url": "https://arr/1", "href": "https://arr/h1", "label": "first"},
                 {"id": 2, "_links": {"x": {}}, "label": "second"}
             ]
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
 
         prune_az_noise(&mut value);
 
         let obj = value.as_object().unwrap();
         // Top-level noise keys gone
         for key in NOISE_KEYS {
-            assert!(!obj.contains_key(*key), "top-level key '{}' should be stripped", key);
+            assert!(
+                !obj.contains_key(*key),
+                "top-level key '{}' should be stripped",
+                key
+            );
         }
         // Top-level real key survives
         assert_eq!(obj["name"].as_str().unwrap(), "keep-me");
@@ -2360,14 +2460,22 @@ mod tests {
         // Nested level
         let nested = obj["nested"].as_object().unwrap();
         for key in NOISE_KEYS {
-            assert!(!nested.contains_key(*key), "nested key '{}' should be stripped", key);
+            assert!(
+                !nested.contains_key(*key),
+                "nested key '{}' should be stripped",
+                key
+            );
         }
         assert_eq!(nested["real"].as_str().unwrap(), "data");
 
         // Deep nested level
         let deep = nested["deep"].as_object().unwrap();
         for key in NOISE_KEYS {
-            assert!(!deep.contains_key(*key), "deep key '{}' should be stripped", key);
+            assert!(
+                !deep.contains_key(*key),
+                "deep key '{}' should be stripped",
+                key
+            );
         }
         assert_eq!(deep["value"].as_i64().unwrap(), 42);
 
@@ -2376,7 +2484,12 @@ mod tests {
         for (i, item) in items.iter().enumerate() {
             let item_obj = item.as_object().unwrap();
             for key in NOISE_KEYS {
-                assert!(!item_obj.contains_key(*key), "items[{}] key '{}' should be stripped", i, key);
+                assert!(
+                    !item_obj.contains_key(*key),
+                    "items[{}] key '{}' should be stripped",
+                    i,
+                    key
+                );
             }
         }
         assert_eq!(items[0]["label"].as_str().unwrap(), "first");
@@ -2413,14 +2526,26 @@ mod tests {
         let (output, truncated) = compress_az_generic(raw);
 
         // Real values preserved
-        assert!(output.contains("2026.0415.3"), "buildNumber value must survive");
+        assert!(
+            output.contains("2026.0415.3"),
+            "buildNumber value must survive"
+        );
         assert!(output.contains("300000"), "numeric id must survive");
-        assert!(output.contains("refs/heads/main"), "sourceBranch must survive");
+        assert!(
+            output.contains("refs/heads/main"),
+            "sourceBranch must survive"
+        );
         assert!(output.contains("succeeded"), "result must survive");
 
         // Noise keys stripped
-        assert!(!output.contains("\"_links\""), "_links key must be stripped");
-        assert!(!output.contains("\"collectionUri\""), "collectionUri key must be stripped");
+        assert!(
+            !output.contains("\"_links\""),
+            "_links key must be stripped"
+        );
+        assert!(
+            !output.contains("\"collectionUri\""),
+            "collectionUri key must be stripped"
+        );
         assert!(!output.contains("\"href\""), "href key must be stripped");
 
         // Not truncated (only 2 items, well under MAX_ITEMS)
@@ -2437,7 +2562,10 @@ mod tests {
 
         let (output, truncated) = compress_az_generic(&raw);
 
-        assert!(output.contains("... +5 more items"), "should show +5 overflow trailer");
+        assert!(
+            output.contains("... +5 more items"),
+            "should show +5 overflow trailer"
+        );
         assert!(truncated, "truncated flag must be true");
         assert!(
             output.len() < raw.len(),
@@ -2471,7 +2599,10 @@ mod tests {
             "output length {} should be under 20300",
             output.len()
         );
-        assert!(truncated, "truncated flag must be true for tail-capped output");
+        assert!(
+            truncated,
+            "truncated flag must be true for tail-capped output"
+        );
     }
 
     #[test]
@@ -2499,7 +2630,10 @@ mod tests {
 
         // Real values preserved
         assert!(output.contains("my-repo"), "name must survive");
-        assert!(output.contains("refs/heads/main"), "defaultBranch must survive");
+        assert!(
+            output.contains("refs/heads/main"),
+            "defaultBranch must survive"
+        );
         assert!(output.contains("42"), "size must survive");
         assert!(output.contains("MyProject"), "project.name must survive");
         assert!(output.contains("private"), "visibility must survive");
@@ -2507,8 +2641,14 @@ mod tests {
         // Noise keys stripped at all depths
         assert!(!output.contains("\"_links\""), "_links must be stripped");
         assert!(!output.contains("\"href\""), "href must be stripped");
-        assert!(!output.contains("\"projectId\""), "projectId must be stripped");
-        assert!(!output.contains("\"revision\""), "revision must be stripped");
+        assert!(
+            !output.contains("\"projectId\""),
+            "projectId must be stripped"
+        );
+        assert!(
+            !output.contains("\"revision\""),
+            "revision must be stripped"
+        );
         // url appears as both key and could appear in value; check the key form
         // The key "url" should be stripped, so no "url": pattern
         assert!(!output.contains("\"url\""), "url key must be stripped");

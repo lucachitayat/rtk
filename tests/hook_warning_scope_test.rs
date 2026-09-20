@@ -17,6 +17,13 @@ const REMINDER: &str = "No hook installed";
 fn isolating_env(home: &Path) -> Vec<(String, std::ffi::OsString)> {
     vec![
         ("HOME".into(), home.as_os_str().to_owned()),
+        // Takes precedence over $HOME in `resolve_claude_dir`, so a runner that
+        // exports it (multi-profile Claude Code setups do) would otherwise point
+        // the probe at a real, hook-installed profile and silence the reminder.
+        (
+            "CLAUDE_CONFIG_DIR".into(),
+            home.join(".claude").into_os_string(),
+        ),
         ("RTK_DB_PATH".into(), home.join("rtk.db").into_os_string()),
         (
             "XDG_CONFIG_HOME".into(),

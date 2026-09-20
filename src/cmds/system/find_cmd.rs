@@ -505,8 +505,7 @@ fn native_walk(
                 let display = entry_display(&entry, &root, &pattern, want_dirs, case_insensitive);
                 // Once the walk is past the disclosure cap the bookkeeping is discarded
                 // wholesale, so stop buffering it — only matches still need to be sent.
-                let over_cap =
-                    seen.fetch_add(1, Ordering::Relaxed) >= DISCLOSURE_ENTRY_CAP;
+                let over_cap = seen.fetch_add(1, Ordering::Relaxed) >= DISCLOSURE_ENTRY_CAP;
                 if over_cap && display.is_none() {
                     return WalkState::Continue;
                 }
@@ -1528,14 +1527,8 @@ mod tests {
         case_insensitive: bool,
         max_depth: Option<usize>,
     ) -> Vec<String> {
-        let (mut files, _) = native_walk(
-            path,
-            pattern,
-            max_depth,
-            want_dirs,
-            case_insensitive,
-            true,
-        );
+        let (mut files, _) =
+            native_walk(path, pattern, max_depth, want_dirs, case_insensitive, true);
         files.sort();
         files
     }
